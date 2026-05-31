@@ -79,6 +79,20 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Initialize Map
     function initMap() {
+        if (typeof L === 'undefined') {
+            console.error("Leaflet library failed to load or was blocked by the browser.");
+            const mapDiv = document.getElementById('map');
+            if (mapDiv) {
+                mapDiv.innerHTML = `
+                    <div style="display:flex; flex-direction:column; justify-content:center; align-items:center; height:100%; padding:20px; text-align:center; background:#1e293b; color:#fff; font-family:'Outfit', sans-serif;">
+                        <h3 style="font-size:1.25rem; font-weight:700; margin-bottom:8px;">Leaflet Maps CDN Offline</h3>
+                        <p style="font-size:0.88rem; color:#94a3b8; max-width:400px; margin-bottom:20px;">The Leaflet map library failed to load. This usually happens if the unpkg.com CDN is blocked by your network firewall, DNS blocker, or an ad-blocker extension.</p>
+                        <button onclick="window.location.reload()" style="background:#10b981; color:#fff; border:none; padding:10px 20px; font-weight:600; border-radius:6px; cursor:pointer; transition:all 0.2s;">Reload Page</button>
+                    </div>`;
+            }
+            return;
+        }
+
         baseSatellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
             attribution: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community'
         });
