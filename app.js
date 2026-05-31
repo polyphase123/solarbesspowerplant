@@ -899,6 +899,22 @@ document.addEventListener('DOMContentLoaded', () => {
         safeSetText('stat-lcoe', `Estimated LCOE: $${stats.lcoe.toFixed(2)}/MWh`);
         safeSetText('bess-target-mwh', `${stats.bessCapacity.toFixed(1)} MWh`);
         safeSetText('bess-est-containers', `${stats.bessContainers} Units`);
+
+        // Automatically adopt the calculated Solar Capacity (MW) from the GIS Map inside the Smart String BESS Sizer
+        const solarSlider = document.getElementById('solar-mw');
+        if (solarSlider && stats.pvCapacity > 0) {
+            if (stats.pvCapacity > parseFloat(solarSlider.max)) {
+                solarSlider.max = Math.ceil(stats.pvCapacity);
+            }
+            solarSlider.value = stats.pvCapacity.toFixed(2);
+            const valSpan = document.getElementById('solar-mw-val');
+            if (valSpan) valSpan.innerText = stats.pvCapacity.toFixed(2) + ' MW';
+            
+            // Trigger BESS sizing recalculation
+            if (window.updateSizing) {
+                window.updateSizing();
+            }
+        }
     }
 
     // Update 20+ Engineering specs board
@@ -1276,4 +1292,1453 @@ document.addEventListener('DOMContentLoaded', () => {
     // Initialize Map and UI on startup
     initMap();
     setupEventListeners();
+    
+    // Auto-init BESS sizing features on dom load
+    setTimeout(() => {
+        initBessSizer();
+    }, 100);
 });
+
+/* ==========================================================================
+   INTEGRATED HUAWEI BESS SIZING & CALCULATORS MODULE (GLOBAL STATE)
+   ========================================================================== */
+
+let currentScreen = 'map';
+let selectedFeatureIndex = 1;
+let simChart = null;
+let featChart = null;
+
+// Product Catalog Specs database
+const HUAWEI_BESS_CATALOG = {
+  utility: {
+    model: 'LUNA2000-4472-2S (Flagship)',
+    unitEnergy: 4.472, // MWh
+    unitPower: 2.236,  // MW
+    cooling: 'Liquid Cooled',
+    footprint: '6.058 x 2.438 m (20ft Container)',
+    weight: 42000 // kg
+  }
+};
+
+// Global Sizing Init
+function initBessSizer() {
+    initSizingCharts();
+    toggleSolarPanel();
+    selectFeature(1);
+    
+    // Slider values synchronization
+    const syncVal = (id, suffix) => {
+        const slider = document.getElementById(id);
+        if (slider) {
+            slider.addEventListener('input', (e) => {
+                const bubble = document.getElementById(id + '-val');
+                if (bubble) bubble.textContent = e.target.value + suffix;
+            });
+        }
+    };
+    syncVal('solar-mw', ' MW');
+    syncVal('pv-penetration', ' %');
+    syncVal('target-power', ' MW');
+    syncVal('target-duration', ' Hrs');
+    syncVal('dod-limit', ' %');
+
+    // Two-way synchronization between BESS Map settings and Sizer panel
+    const mapRatio = document.getElementById('bess-ratio');
+    const sizerRatio = document.getElementById('pv-penetration');
+    if (mapRatio && sizerRatio) {
+        mapRatio.addEventListener('input', () => {
+            sizerRatio.value = mapRatio.value;
+            const bubble = document.getElementById('pv-penetration-val');
+            if (bubble) bubble.textContent = mapRatio.value + ' %';
+            updateSizing();
+        });
+        sizerRatio.addEventListener('input', () => {
+            mapRatio.value = sizerRatio.value;
+            triggerAutoLayout();
+        });
+    }
+
+    const mapDuration = document.getElementById('bess-target-duration');
+    const sizerDuration = document.getElementById('target-duration');
+    if (mapDuration && sizerDuration) {
+        mapDuration.addEventListener('input', () => {
+            sizerDuration.value = mapDuration.value;
+            const bubble = document.getElementById('target-duration-val');
+            if (bubble) bubble.textContent = mapDuration.value + ' Hrs';
+            updateSizing();
+        });
+        sizerDuration.addEventListener('input', () => {
+            mapDuration.value = sizerDuration.value;
+            triggerAutoLayout();
+        });
+    }
+
+    const mapDoe = document.getElementById('bess-doe-req');
+    const sizerDoe = document.getElementById('ph-doe-mandate');
+    if (mapDoe && sizerDoe) {
+        mapDoe.addEventListener('change', () => {
+            sizerDoe.checked = mapDoe.checked;
+            updateSizing();
+        });
+        sizerDoe.addEventListener('change', () => {
+            mapDoe.checked = sizerDoe.checked;
+            triggerAutoLayout();
+        });
+    }
+
+    // Dropdown BESS container synchronization (Utility Scale only)
+    const mapContainer = document.getElementById('bess-container-type');
+    const sizerApp = document.getElementById('application-type');
+    if (mapContainer && sizerApp) {
+        mapContainer.addEventListener('change', () => {
+            sizerApp.value = 'utility';
+            if (window.handleAppChange) {
+                window.handleAppChange();
+            }
+        });
+        sizerApp.addEventListener('change', () => {
+            triggerAutoLayout();
+        });
+    }
+}
+
+// Global Workspace Screen Swapper
+window.switchScreen = function(screenId) {
+    currentScreen = screenId;
+    
+    // Toggle navigation classes
+    document.querySelectorAll('.nav-item-btn').forEach(btn => {
+        if (btn.getAttribute('data-screen') === screenId) {
+            btn.classList.add('active');
+        } else {
+            btn.classList.remove('active');
+        }
+    });
+
+    // Hide all screen contents
+    document.querySelectorAll('.app-screen').forEach(screen => {
+        screen.style.display = 'none';
+        screen.classList.remove('active');
+    });
+
+    // Show target screen
+    const targetScreen = document.getElementById(`screen-${screenId}`);
+    if (targetScreen) {
+        targetScreen.style.display = (screenId === 'engineering') ? 'grid' : 'flex';
+        setTimeout(() => { targetScreen.classList.add('active'); }, 50);
+    }
+
+    // Toggle map settings in scrollable sidebar to maximize workspace focus
+    const sections = document.querySelectorAll('.sidebar-scroll > .settings-section');
+    sections.forEach((sec, idx) => {
+        if (idx > 0) { // Keep Workspace Navigator visible always
+            sec.style.display = (screenId === 'map') ? 'block' : 'none';
+        }
+    });
+
+    const sidebarFooter = document.querySelector('.sidebar-footer');
+    if (sidebarFooter) sidebarFooter.style.display = (screenId === 'map') ? 'flex' : 'none';
+
+    // Trigger chart resizes and specific module initializations
+    if (screenId === 'sizer' && simChart) {
+        simChart.resize();
+        updateSizing();
+    }
+};
+
+// Toggle solar inputs
+window.toggleSolarPanel = function() {
+    const isChecked = document.getElementById('include-solar').checked;
+    const group = document.getElementById('solar-input-group');
+    
+    document.getElementById('target-power').disabled = isChecked;
+    document.getElementById('target-duration').disabled = isChecked;
+    
+    if (group) {
+        group.style.display = isChecked ? 'flex' : 'none';
+    }
+    updateSizing();
+};
+
+// Handle app segment change
+window.handleAppChange = function() {
+    const solarSlider = document.getElementById('solar-mw');
+    const targetSlider = document.getElementById('target-power');
+    
+    solarSlider.max = 250; 
+    if (parseFloat(solarSlider.value) > 250) {
+        // Keep custom high capacity if set by map
+    } else if (parseFloat(solarSlider.value) < 1) {
+        solarSlider.value = 50;
+    }
+    targetSlider.max = 100;
+    
+    document.getElementById('solar-mw-val').innerText = solarSlider.value + ' MW';
+    document.getElementById('target-power-val').innerText = targetSlider.value + ' MW';
+    
+    updateSizing();
+};
+
+// Calculations sizer logic
+window.updateSizing = function() {
+    const includeSolar = document.getElementById('include-solar').checked;
+    const appType = document.getElementById('application-type').value;
+    const dodLimit = parseFloat(document.getElementById('dod-limit').value) / 100;
+    
+    let targetPower = parseFloat(document.getElementById('target-power').value);
+    let targetDuration = parseFloat(document.getElementById('target-duration').value);
+    
+    if (includeSolar) {
+        const solarMW = parseFloat(document.getElementById('solar-mw').value);
+        const penetration = parseFloat(document.getElementById('pv-penetration').value) / 100;
+        
+        const dailyGenMWh = solarMW * 5;
+        let recBessMWh = dailyGenMWh * penetration;
+        
+        targetDuration = 2.0; 
+        targetPower = parseFloat((recBessMWh / targetDuration).toFixed(2));
+        
+        const phDoe = document.getElementById('ph-doe-mandate').checked;
+        if (phDoe) {
+            const minDoe = solarMW * 0.20;
+            if (targetPower < minDoe) {
+                targetPower = parseFloat(minDoe.toFixed(2));
+                recBessMWh = targetPower * targetDuration;
+            }
+        }
+        
+        document.getElementById('target-power').value = targetPower;
+        document.getElementById('target-power-val').innerText = targetPower + ' MW';
+        document.getElementById('target-duration').value = targetDuration;
+        document.getElementById('target-duration-val').innerText = targetDuration + ' Hrs';
+    }
+    
+    const usable = targetPower * targetDuration;
+    const nominal = usable / dodLimit;
+    
+    document.getElementById('calc-usable').innerText = usable.toFixed(2) + ' MWh';
+    document.getElementById('calc-nominal').innerText = nominal.toFixed(2) + ' MWh';
+    
+    const prod = HUAWEI_BESS_CATALOG[appType];
+    const units = Math.ceil(nominal / prod.unitEnergy);
+    const totalPower = units * prod.unitPower;
+    const totalEnergy = units * prod.unitEnergy;
+    
+    document.getElementById('rec-model-name').innerText = prod.model;
+    document.getElementById('rec-units').innerText = `${units} Unit${units > 1 ? 's' : ''}`;
+    document.getElementById('rec-power').innerText = `${totalPower.toFixed(2)} MW`;
+    document.getElementById('rec-energy').innerText = `${totalEnergy.toFixed(2)} MWh`;
+    
+    updateSizingSimulationChart(targetPower, usable);
+};
+
+// Sizing Simulation Chart
+function initSizingCharts() {
+    const canvas = document.getElementById('sizingSimulationChart');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    
+    simChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: Array.from({length: 24}, (_, i) => `${i}:00`),
+            datasets: [
+                {
+                    label: 'Solar Output (MW)',
+                    borderColor: 'rgba(245, 158, 11, 0.9)',
+                    backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                    fill: true,
+                    tension: 0.4,
+                    data: []
+                },
+                {
+                    label: 'Grid Load (MW)',
+                    borderColor: 'rgba(59, 130, 246, 0.8)',
+                    borderDash: [5, 5],
+                    tension: 0.3,
+                    data: []
+                },
+                {
+                    label: 'BESS State of Charge (%)',
+                    borderColor: 'rgba(239, 68, 68, 0.9)',
+                    backgroundColor: 'rgba(239, 68, 68, 0.05)',
+                    yAxisID: 'y1',
+                    tension: 0.2,
+                    data: []
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                y: { title: { display: true, text: 'Power (MW)' } },
+                y1: {
+                    type: 'linear',
+                    position: 'right',
+                    grid: { drawOnChartArea: false },
+                    title: { display: true, text: 'State of Charge (%)' },
+                    min: 0, max: 100
+                }
+            }
+        }
+    });
+}
+
+function updateSizingSimulationChart(targetPower, capacity) {
+    if (!simChart) return;
+    const solar = [0, 0, 0, 0, 0, 0.1, 1.5, 4.5, 9, 15, 22, 28, 30, 29, 23, 16, 9, 3, 0.5, 0, 0, 0, 0, 0];
+    const load = [5, 4, 4.2, 4.5, 5.5, 8.5, 12, 14, 15, 16, 17, 18, 17.5, 17, 16, 16.5, 19, 22, 24, 20, 15, 10, 7, 5.5];
+    
+    const scale = targetPower / 15;
+    const scaledSolar = solar.map(v => v * scale * 1.5);
+    const scaledLoad = load.map(v => v * scale);
+    
+    let soc = 20;
+    const socCurve = [];
+    for (let i = 0; i < 24; i++) {
+        if (scaledSolar[i] > scaledLoad[i]) soc += (scaledSolar[i] - scaledLoad[i]) * 0.45;
+        else if (i >= 18 && i <= 21) soc -= targetPower * 0.45;
+        else soc -= 0.8;
+        soc = Math.max(10, Math.min(100, soc));
+        socCurve.push(parseFloat(soc.toFixed(1)));
+    }
+    
+    simChart.data.datasets[0].data = scaledSolar.map(v => parseFloat(v.toFixed(2)));
+    simChart.data.datasets[1].data = scaledLoad.map(v => parseFloat(v.toFixed(2)));
+    simChart.data.datasets[2].data = socCurve;
+    simChart.update();
+}
+
+/* ==========================================================================
+   55 DYNAMIC HIGH-FIDELITY ENGINEERING CALCULATORS Logic
+   ========================================================================== */
+
+window.selectFeature = function(index) {
+    selectedFeatureIndex = index;
+    document.querySelectorAll('.feature-select-btn').forEach(btn => {
+        if (parseInt(btn.getAttribute('data-feature')) === index) btn.classList.add('active');
+        else btn.classList.remove('active');
+    });
+    
+    // Dynamically update calculator title
+    const activeBtn = document.querySelector(`.feature-select-btn[data-feature="${index}"]`);
+    const titleEl = document.getElementById('calc-title');
+    if (activeBtn && titleEl) {
+        titleEl.textContent = activeBtn.childNodes[0].textContent.trim();
+    }
+    
+    renderFeatureCalculator();
+};
+
+function renderFeatureCalculator() {
+    const inputsDiv = document.getElementById('calc-inputs');
+    const formulaDiv = document.getElementById('calc-formula');
+    
+    inputsDiv.innerHTML = '';
+    
+    switch(selectedFeatureIndex) {
+        case 1:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Solar Plant Capacity (MW)</label><input type="number" id="feat-pv-mw" value="100" min="1" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>Curtailment Target Ratio (%)</label><input type="number" id="feat-pv-prevent" value="15" min="1" max="100" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', 'E_{\\text{BESS}} = P_{\\text{PV}} \\times H_{\\text{sun}} \\times R_{\\text{curtail}}');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div><div style="font-size:0.75rem; color:var(--text-secondary); margin-top:8px;"><strong>Formula:</strong> Sizing (MWh) = Solar Power (MW) &times; 5.0 Peak Sun Hours &times; Target Factor</div>`;
+            break;
+        case 2:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Demand Reduction Level (MW)</label><input type="number" id="feat-shift-reduction" value="10" min="1" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>Peak Shaving Window (Hours)</label><input type="number" id="feat-shift-hours" value="4" min="1" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', 'E_{\\text{shaved}} = P_{\\text{shave}} \\times T_{\\text{window}}');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div><div style="font-size:0.75rem; color:var(--text-secondary); margin-top:8px;"><strong>Formula:</strong> Energy (MWh) = Reduction (MW) &times; Shifting Duration (Hours)</div>`;
+            break;
+        case 3:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>System Active Power (MW)</label><input type="number" id="feat-crate-power" value="20" min="1" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>Target C-Rate (C)</label><select id="feat-crate-val" onchange="runFeatCalc()"><option value="0.5">0.5C (2-Hour system)</option><option value="1">1.0C (1-Hour system)</option><option value="2">2.0C (30-Min peak buffer)</option></select></div>`;
+            formulaDiv.setAttribute('data-latex', 'E_{\\text{nominal}} = \\frac{P_{\\text{discharge}}}{C_{\\text{rate}}}');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div><div style="font-size:0.75rem; color:var(--text-secondary); margin-top:8px;"><strong>Formula:</strong> Energy (MWh) = Discharge Power / C-rate</div>`;
+            break;
+        case 4:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Cycles per Year</label><input type="number" id="feat-soh-cycles" value="350" min="1" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>Cell Temperature (&deg;C)</label><input type="number" id="feat-soh-temp" value="28" min="10" max="60" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', '\\text{Degradation}_{\\text{annual}} = \\frac{N_{\\text{cycles}}}{6000} \\times \\left[1 + 0.05 \\times \\max(0, T_{\\text{cell}} - 25)\\right]');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div><div style="font-size:0.75rem; color:var(--text-secondary); margin-top:8px;"><strong>Formula:</strong> Lifecycle SOH degradation factoring cell thermal stresses</div>`;
+            break;
+        case 5:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Battery DC RTE (%)</label><input type="number" id="feat-rte-cell" value="95" min="80" max="100" step="0.5" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>PCS Inverter Efficiency (%)</label><input type="number" id="feat-rte-pcs" value="98.5" min="95" max="100" step="0.1" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', '\\eta_{\\text{system}} = \\eta_{\\text{cell}} \\times \\eta_{\\text{PCS}}^2 \\times \\eta_{\\text{transformer}}^2');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div><div style="font-size:0.75rem; color:var(--text-secondary); margin-top:8px;"><strong>Formula:</strong> Cumulative Round Trip Efficiency path losses</div>`;
+            break;
+        case 6:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Usable Capacity Target (MWh)</label><input type="number" id="feat-dod-target" value="50" min="1" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>Depth of Discharge (DOD) (%)</label><input type="number" id="feat-dod-pct" value="90" min="50" max="100" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', 'E_{\\text{nominal}} = \\frac{E_{\\text{usable}}}{\\text{DoD}}');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 7:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Ambient Design Temperature (&deg;C)</label><input type="number" id="feat-temp-ambient" value="42" min="-20" max="60" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', '\\text{Capacity}_{\\%} = \\min\\left(100,\\, 100 - 0.8 \\times (T_{\\text{ambient}} - 35)\\right)');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 8:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>System Active Power (MW)</label><input type="number" id="feat-pcs-mw" value="15" min="1" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>PCS Module Sizing</label><select id="feat-pcs-type" onchange="runFeatCalc()"><option value="200">Huawei Smart PCS - 200 kW</option><option value="3150">Huawei STS Station - 3.15 MW</option></select></div>`;
+            formulaDiv.setAttribute('data-latex', 'N_{\\text{PCS}} = \\left\\lceil \\frac{P_{\\text{target}}}{P_{\\text{PCS}}} \\right\\rceil');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 9:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>System CAPEX ($/float)</label><input type="number" id="feat-lcos-capex" value="180" min="50" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>Operating Lifetime (Years)</label><input type="number" id="feat-lcos-years" value="15" min="5" max="25" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', '\\text{LCOS} = \\frac{\\text{CAPEX} + \\sum \\text{OPEX}}{\\sum E_{\\text{delivered}}}');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 10:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>BESS Container MWh Rating</label><input type="number" id="feat-hvac-mwh" value="2.0" min="0.1" step="0.1" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>Continuous C-Rate</label><input type="number" id="feat-hvac-crate" value="1.0" min="0.1" max="3" step="0.1" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', 'Q_{\\text{cooling}} = P_{\\text{loss}} \\times 1.20');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 11:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Substation Transformer Capacity (MVA)</label><input type="number" id="feat-fault-mva" value="50" min="1" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>Impedance Z (%)</label><input type="number" id="feat-fault-z" value="10" min="1" max="25" step="0.5" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', 'I_{\\text{sc}} = \\frac{S_{\\text{MVA}}}{\\sqrt{3} \\times V_{\\text{kV}} \\times Z_{\\%}} \\times 100');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 12:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Calculated Units Count</label><input type="number" id="feat-footprint-units" value="15" min="1" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>Container standard footprint (m&sup2;)</label><input type="number" id="feat-footprint-area" value="14.8" min="5" step="0.1" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', 'A_{\\text{total}} = N_{\\text{units}} \\times A_{\\text{footprint}} \\times F_{\\text{setback}}');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 13:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Total Nominal BESS capacity (MWh)</label><input type="number" id="feat-auxdraw-mwh" value="60" min="1" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>Base Auxiliary Factor (%)</label><input type="number" id="feat-auxdraw-factor" value="1.5" min="0.1" step="0.1" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', 'P_{\\text{aux}} = E_{\\text{nominal}} \\times k_{\\text{aux}}');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 14:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Nominal Operating Voltage (kV)</label><input type="number" id="feat-clearance-kv" value="115" min="1" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', 'D_{\\text{clearance}} = 0.2 + 0.005 \\times (V_{\\text{kV}} - 50)');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 15:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Total Battery Enclosures Count</label><input type="number" id="feat-delugew-units" value="25" min="1" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>NFPA Flow Rate per Unit (GPM)</label><input type="number" id="feat-delugew-flow" value="45" min="5" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', 'V_{\\text{fire-water}} = N_{\\text{units}} \\times Q_{\\text{gpm}} \\times T_{\\text{flow}}');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 16:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Available FFR Active Reserve (MW)</label><input type="number" id="feat-ffr-mw" value="20" min="1" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>Grid Trigger Deviation (Hz)</label><input type="number" id="feat-ffr-dev" value="0.25" min="0.05" step="0.05" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', 'P_{\\text{response}} = P_{\\text{reserve}} \\times \\frac{\\Delta f}{\\Delta f_{\\text{trigger}}}');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 17:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Target Daily Sizing (MWh)</label><input type="number" id="feat-roi-mwh" value="100" min="1" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>Grid Buy-Sell spread ($/MWh)</label><input type="number" id="feat-roi-spread" value="45" min="5" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', '\\text{Revenue}_{\\text{daily}} = E_{\\text{nominal}} \\times \\text{Spread}_{\\text{net}} \\times \\eta_{\\text{RTE}}');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 18:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Annual Solar yield output (MWh)</label><input type="number" id="feat-co2-mwh" value="145000" min="100" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>Grid Emission Factor (tons/MWh)</label><input type="number" id="feat-co2-ef" value="0.52" min="0.1" step="0.01" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', '\\text{CO2}_{\\text{offset}} = E_{\\text{yield}} \\times EF_{\\text{grid}}');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 19:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>BESS Nominal AC capacity (MW)</label><input type="number" id="feat-pqs-mw" value="25" min="1" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>Grid Total Harmonic Load (THD) (%)</label><input type="number" id="feat-pqs-thd" value="4.5" min="0.5" step="0.5" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', 'S_{\\text{compensation}} = P_{\\text{BESS}} \\times THD_{\\%}');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 20:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Total battery enclosures</label><input type="number" id="feat-wgt-count" value="18" min="1" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>Base Container Weight (Tons)</label><input type="number" id="feat-wgt-mass" value="38" min="1" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', 'W_{\\text{loading}} = N_{\\text{units}} \\times m_{\\text{unit}} \\times g');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 21:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Design Site Altitude (meters)</label><input type="number" id="feat-alt-val" value="1800" min="0" max="5000" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', 'K_{\\text{derate}} = 1.0 - 0.0001 \\times \\max(0, h_{\\text{alt}} - 1000)');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 22:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>DC Input current per string (A)</label><input type="number" id="feat-sts-amp" value="350" min="10" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>Connected PV strings count</label><input type="number" id="feat-sts-strings" value="12" min="1" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', 'P_{\\text{STS}} = I_{\\text{string}} \\times N_{\\text{strings}} \\times V_{\\text{DC-nominal}}');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 23:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Fault clearing time (ms)</label><input type="number" id="feat-brk-ms" value="85" min="10" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>Rated Breaking Capacity (kA)</label><input type="number" id="feat-brk-ka" value="40" min="1" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', 'E_{\\text{breaking}} = I_{\\text{break}}^2 \\times t_{\\text{clear}}');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 24:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Total PV Strings per sub-array</label><input type="number" id="feat-com-strings" value="24" min="1" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>String current (A)</label><input type="number" id="feat-com-current" value="15" min="1" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', 'I_{\\text{bus-bar}} = N_{\\text{strings}} \\times I_{\\text{string}} \\times 1.25');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 25:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Nominal Cell SOH (%)</label><input type="number" id="feat-bal-soh" value="98.5" min="80" max="100" step="0.1" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>Allowed cell-to-cell delta (mV)</label><input type="number" id="feat-bal-delta" value="12" min="1" max="100" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', '\\text{SOC}_{\\text{variance}} = \\frac{\\Delta V_{\\text{cell}}}{V_{\\text{average}}} \\times \\text{SOH}_{\\%}');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 26:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Proximity to shoreline (meters)</label><input type="number" id="feat-c5-distance" value="450" min="1" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', '\\text{Corrosion}_{\\text{rate}} = 50 \\times e^{-0.005 \\times d_{\\text{coast}}}');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 27:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Continuous HVAC power draw (kW)</label><input type="number" id="feat-hvacopt-kw" value="12" min="1" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>HVAC COP factor</label><input type="number" id="feat-hvacopt-cop" value="3.4" min="1" step="0.1" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', 'P_{\\text{cooling-net}} = \\frac{P_{\\text{raw}}}{COP}');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 28:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Fundamental current (A)</label><input type="number" id="feat-thd-fund" value="1200" min="10" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>Harmonic currents total (A)</label><input type="number" id="feat-thd-harm" value="36" min="1" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', 'THD_{\\%} = \\frac{I_{\\text{harmonics}}}{I_{\\text{fundamental}}} \\times 100');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 29:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Grid inertia constant H (s)</label><input type="number" id="feat-gfm-h" value="4.5" min="0.5" step="0.1" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>BESS Power Rating (MW)</label><input type="number" id="feat-gfm-power" value="30" min="1" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', 'E_{\\text{virtual-inertia}} = 2 \\times P_{\\text{BESS}} \\times H');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 30:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Nominal current rating (A)</label><input type="number" id="feat-oc-amp" value="630" min="10" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>Overcurrent trip setting factor</label><input type="number" id="feat-oc-factor" value="1.25" min="1.0" step="0.05" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', 'I_{\\text{trip}} = I_{\\text{nominal}} \\times F_{\\text{trip}}');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 31:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Sub-structure structural pile height (m)</label><input type="number" id="feat-windf-height" value="2.8" min="0.5" step="0.1" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>Safety factor</label><input type="number" id="feat-windf-sf" value="1.5" min="1.0" step="0.1" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', 'D_{\\text{pile}} = h_{\\text{pile}} \\times F_{\\text{safety}} \\times 0.65');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 32:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>DC run conductor length (m)</label><input type="number" id="feat-dcrun-m" value="250" min="10" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>Conductor cross section (mm&sup2;)</label><input type="number" id="feat-dcrun-size" value="70" min="4" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', 'R_{\\text{dc}} = \\rho_{\\text{copper}} \\times \\frac{L}{A_{\\text{cross-section}}}');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 33:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Parallel STS units count</label><input type="number" id="feat-cir-count" value="4" min="2" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>Phase deviation angle (rad)</label><input type="number" id="feat-cir-angle" value="0.02" min="0.005" step="0.005" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', 'I_{\\text{circulating}} = \\frac{V \\times \\sin(\\Delta \\theta)}{Z_{\\text{internal}}}');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 34:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Transformer nominal load (MVA)</label><input type="number" id="feat-hot-load" value="45" min="1" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>Ambient Temp (&deg;C)</label><input type="number" id="feat-hot-ambient" value="38" min="10" max="60" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', 'T_{\\text{hotspot}} = T_{\\text{ambient}} + 55 \\times \\left(\\frac{S_{\\text{load}}}{S_{\\text{rated}}}\\right)^{1.6}');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 35:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Project Sizing Capacity (MW)</label><input type="number" id="feat-irr-capacity" value="120" min="1" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>Annual Yield factor (kWh/kW)</label><input type="number" id="feat-irr-yield" value="1650" min="500" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', '\\text{IRR}_{\\%} = \\left(\\frac{\\text{Yield}_{\\text{annual}} \\times \\text{Tariff}}{\\text{CAPEX}}\\right)^{0.1} - 1.0');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 36:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Substation Capacity (MVA)</label><input type="number" id="feat-trans-capacity" value="50" min="1" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>No-load Loss Factor (%)</label><input type="number" id="feat-trans-factor" value="0.25" min="0.05" step="0.05" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', 'P_{\\text{excitation}} = S_{\\text{substation}} \\times k_{\\text{no-load}}');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 37:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Base Round-Trip Efficiency (%)</label><input type="number" id="feat-rtex-base" value="95" min="80" max="100" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>Cell Temperature (&deg;C)</label><input type="number" id="feat-rtex-temp" value="45" min="10" max="70" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', '\\eta_{\\text{temp}} = \\eta_{\\text{base}} - 0.0015 \\times \\max(0, T_{\\text{cell}} - 25)');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 38:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Nominal Current Rating (A)</label><input type="number" id="feat-soil-amp" value="400" min="10" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>Soil Thermal Resistivity (K-m/W)</label><input type="number" id="feat-soil-resist" value="1.8" min="0.5" step="0.1" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', 'I_{\\text{derated}} = I_{\\text{base}} \\times \\sqrt{\\frac{1.2}{R_{\\text{thermal}}}}');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 39:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Power Injected (MW)</label><input type="number" id="feat-rise-power" value="30" min="1" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>Grid Short-circuit MVA (MVA)</label><input type="number" id="feat-rise-sc" value="1500" min="10" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', '\\Delta V_{\\%} = \\frac{P}{S_{\\text{short-circuit}}} \\times 100');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 40:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>AC System Current (A)</label><input type="number" id="feat-imp-current" value="800" min="10" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>Line Resistance & Impedance (&Omega;/km)</label><input type="number" id="feat-imp-val" value="0.125" min="0.01" step="0.001" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', 'V_{\\text{drop-ac}} = \\sqrt{3} \\times I \\times Z_{\\text{cable}} \\times L');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 41:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Transformer Oil Volume (Gal)</label><input type="number" id="feat-deluge-oil" value="8500" min="100" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>Deluge Volume Safety Factor</label><input type="number" id="feat-deluge-factor" value="1.15" min="1.0" step="0.05" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', 'V_{\\text{deluge}} = V_{\\text{oil}} \\times F_{\\text{deluge}}');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 42:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Peak Solar Ingress GHI (W/m&sup2;)</label><input type="number" id="feat-ghi-val" value="1050" min="100" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>BESS Container Surface Area (m&sup2;)</label><input type="number" id="feat-ghi-area" value="78" min="10" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', 'P_{\\text{ingress}} = GHI \\times A_{\\text{surface}} \\times \\alpha_{\\text{absorb}} \\times C_{\\text{HVAC}}');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 43:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Annual Degradation (%)</label><input type="number" id="feat-deg-base" value="1.8" min="0.1" step="0.1" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>SOC Mitigation Margin (%)</label><input type="number" id="feat-deg-soc" value="15" min="0" max="40" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', 'D_{\\text{mitigated}} = D_{\\text{base}} \\times e^{-0.035 \\times \\Delta SoC}');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 44:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Maximum Wind Speed (km/h)</label><input type="number" id="feat-typhoon-wind" value="280" min="50" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>Total Array Uplift Area (m&sup2;)</label><input type="number" id="feat-typhoon-area" value="12000" min="100" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', 'F_{\\text{uplift}} = 0.613 \\times v^2 \\times A_{\\text{array}} \\times C_L');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 45:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>LFP Active Cell Mass (kg)</label><input type="number" id="feat-gas-mass" value="18000" min="100" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>NFPA Safety Vent Factor</label><input type="number" id="feat-gas-vent" value="1.8" min="1.0" step="0.1" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', 'R_{\\text{safety}} = F_{\\text{vent}} \\times \\sqrt{m_{\\text{LFP}}}');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 46:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>DC Array Peak Output (MW)</label><input type="number" id="feat-dc-peak" value="125" min="1" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>Inverter Loading Ratio (ILR)</label><input type="number" id="feat-dc-ilr" value="1.35" min="1.0" step="0.05" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', 'P_{\\text{clipping}} = P_{\\text{DC}} \\times \\left(1 - \\frac{1}{\\text{ILR}}\\right)');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 47:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Substation Fault Current (kA)</label><input type="number" id="feat-gpr-fault" value="25" min="1" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>Ground Grid Resistance (&Omega;)</label><input type="number" id="feat-gpr-res" value="0.45" min="0.05" step="0.05" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', '\\text{GPR} = I_{\\text{fault}} \\times R_{\\text{ground}}');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 48:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Transformer Rated Power (MVA)</label><input type="number" id="feat-bus-power" value="65" min="1" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>System Line Voltage (kV)</label><input type="number" id="feat-bus-voltage" value="115" min="1" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', 'I_{\\text{busbar}} = \\frac{S_{\\text{MVA}}}{\\sqrt{3} \\times V_{\\text{kV}}} \\times 10^3');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 49:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>PV Active Power (MW)</label><input type="number" id="feat-pf-power" value="80" min="1" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>Target Grid Power Factor (PF)</label><input type="number" id="feat-pf-val" value="0.95" min="0.8" max="1.0" step="0.01" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', 'Q_{\\text{STATCOM}} = P \\times \\tan\\left(\\arccos(\\text{PF})\\right)');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 50:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Maximum String Voltage (V)</label><input type="number" id="feat-imb-max" value="1498" min="500" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>Minimum String Voltage (V)</label><input type="number" id="feat-imb-min" value="1476" min="500" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', '\\text{Imbalance}_{\\%} = \\frac{V_{\\text{max}} - V_{\\text{min}}}{V_{\\text{average}}} \\times 100');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 51:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Grid Frequency Deviation (Hz)</label><input type="number" id="feat-freq-dev" value="0.15" min="0.01" max="1.0" step="0.01" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>Frequency Droop Setting (%)</label><input type="number" id="feat-freq-droop" value="4" min="1" max="10" step="0.5" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', '\\Delta P = P_{\\text{max}} \\times \\frac{\\Delta f}{f_{\\text{nominal}} \\times \\text{Droop}}');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 52:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>DC Peak array Capacity (MW)</label><input type="number" id="feat-clip-dc" value="150" min="10" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>Inverter AC rating (MW)</label><input type="number" id="feat-clip-ac" value="120" min="10" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', 'E_{\\text{clipped}} = \\max(0, P_{\\text{DC}} - P_{\\text{AC}}) \\times 4.8');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 53:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Daily Dust Accrual Rate (%)</label><input type="number" id="feat-soil-rate" value="0.18" min="0.01" step="0.01" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>Intermittent Cleaning Interval (days)</label><input type="number" id="feat-soil-days" value="28" min="1" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', 'L_{\\text{soiling}} = r_{\\text{dust}} \\times T_{\\text{cycle}}');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 54:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Bifaciality coefficient (%)</label><input type="number" id="feat-bif-coeff" value="80" min="50" max="100" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>Ground Albedo Factor (%)</label><input type="number" id="feat-bif-albedo" value="22" min="5" max="80" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', 'G_{\\text{bifacial}} = B_{\\text{coeff}} \\times \\alpha_{\\text{albedo}} \\times 1.05');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        case 55:
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>System Nominal Rating (MWh)</label><input type="number" id="feat-water-mwh" value="200" min="1" oninput="runFeatCalc()"></div>
+                <div class="form-group"><label>NFPA Safety Fire Period (Hours)</label><input type="number" id="feat-water-hours" value="3.5" min="1" max="6" step="0.5" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', 'Q_{\\text{water}} = E_{\\text{nominal}} \\times F_{\\text{flow}} \\times T_{\\text{safety}}');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+        default:
+            // Fallback general loader for variables
+            inputsDiv.innerHTML = `
+                <div class="form-group"><label>Input Active Value</label><input type="number" id="feat-generic-val" value="50" min="1" oninput="runFeatCalc()"></div>`;
+            formulaDiv.setAttribute('data-latex', 'Y = X \\times 1.25');
+            formulaDiv.innerHTML = `<div class="math-eq-render"></div>`;
+            break;
+    }
+    
+    runFeatCalc();
+}
+
+window.runFeatCalc = function() {
+    const stepsDiv = document.getElementById('calc-steps');
+    const valSpan = document.getElementById('calc-metric-val');
+    const lblSpan = document.getElementById('calc-metric-lbl');
+    
+    stepsDiv.innerHTML = '';
+    
+    switch(selectedFeatureIndex) {
+        case 1: {
+            const mw = parseFloat(document.getElementById('feat-pv-mw').value) || 100;
+            const ratio = (parseFloat(document.getElementById('feat-pv-prevent').value) || 15) / 100;
+            const result = mw * 5 * ratio;
+            
+            valSpan.innerText = result.toFixed(2) + ' MWh';
+            lblSpan.innerText = 'Calculated Optimal integration Capacity';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Estimate typical solar capacity full sun hours: <span class="step-math">H_{\\text{sun}} = 5.0 \\, \\text{Hrs}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Compute total solar daily output: <span class="step-math">E_{\\text{total}} = ${mw} \\times 5.0 = ${mw * 5} \\, \\text{MWh}</span></div></div>
+                <div class="calc-step"><span class="step-num">3</span><div class="step-text">Apply curtailment target buffering coefficient: <span class="step-math">E_{\\text{BESS}} = ${mw * 5} \\times ${ratio} = ${result.toFixed(2)} \\, \\text{MWh}</span></div></div>`;
+            break;
+        }
+        case 2: {
+            const reduction = parseFloat(document.getElementById('feat-shift-reduction').value) || 10;
+            const hours = parseFloat(document.getElementById('feat-shift-hours').value) || 4;
+            const result = reduction * hours;
+            
+            valSpan.innerText = result.toFixed(2) + ' MWh';
+            lblSpan.innerText = 'Calculated Shaved Peak Energy';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Determine peak load target level: <span class="step-math">P_{\\text{shave}} = ${reduction} \\, \\text{MW}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Multiply by target shaving duration window: <span class="step-math">E_{\\text{shaved}} = ${reduction} \\times ${hours} = ${result.toFixed(2)} \\, \\text{MWh}</span></div></div>`;
+            break;
+        }
+        case 3: {
+            const power = parseFloat(document.getElementById('feat-crate-power').value) || 20;
+            const crate = parseFloat(document.getElementById('feat-crate-val').value) || 0.5;
+            const result = power / crate;
+            
+            valSpan.innerText = result.toFixed(2) + ' MWh';
+            lblSpan.innerText = 'Nominal Sized BESS Energy';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Continuous power dispatch required: <span class="step-math">P = ${power} \\, \\text{MW}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Divide by selected system C-Rate: <span class="step-math">E_{\\text{nominal}} = \\frac{${power}}{${crate}} = ${result.toFixed(2)} \\, \\text{MWh}</span></div></div>`;
+            break;
+        }
+        case 4: {
+            const cycles = parseFloat(document.getElementById('feat-soh-cycles').value) || 350;
+            const temp = parseFloat(document.getElementById('feat-soh-temp').value) || 28;
+            const tempMult = 1 + 0.05 * Math.max(0, temp - 25);
+            const dec = (cycles / 6000) * tempMult;
+            const soh = 100 - (dec * 10);
+            
+            valSpan.innerText = soh.toFixed(2) + ' %';
+            lblSpan.innerText = 'State of Health (SOH) at Year 10';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Base LFP battery cycle life limits: <span class="step-math">N_{\\text{life}} = 6000 \\, \\text{cycles}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Temperature aging multiplier: <span class="step-math">F_{\\text{temp}} = 1 + 0.05 \\times (${temp} - 25) = ${tempMult.toFixed(2)}</span></div></div>
+                <div class="calc-step"><span class="step-num">3</span><div class="step-text">Annual degradation: <span class="step-math">D = \\frac{${cycles}}{6000} \\times ${tempMult.toFixed(2)} = ${dec.toFixed(3)}\\%</span></div></div>
+                <div class="calc-step"><span class="step-num">4</span><div class="step-text">Resulting year 10 SOH Sizing: <span class="step-math">\\text{SOH}_{10\\text{yr}} = 100\\% - (${dec.toFixed(3)}\\% \\times 10) = ${soh.toFixed(2)}\\%</span></div></div>`;
+            break;
+        }
+        case 11: {
+            const mva = parseFloat(document.getElementById('feat-fault-mva').value) || 50;
+            const z = parseFloat(document.getElementById('feat-fault-z').value) || 10;
+            const voltage = 115; // Assume 115 kV substation voltage
+            const result = mva / (Math.sqrt(3) * voltage * (z / 100));
+            
+            valSpan.innerText = result.toFixed(2) + ' kA';
+            lblSpan.innerText = 'Substation Fault Short-Circuit Current';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Nominal rating: <span class="step-math">S = ${mva} \\, \\text{MVA}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Nominal grid voltage: <span class="step-math">V = 115 \\, \\text{kV}</span></div></div>
+                <div class="calc-step"><span class="step-num">3</span><div class="step-text">Calculate short-circuit current: <span class="step-math">I_{\\text{sc}} = \\frac{${mva}}{\\sqrt{3} \\times 115 \\times ${z / 100}} = ${result.toFixed(2)} \\, \\text{kA}</span></div></div>`;
+            break;
+        }
+        case 12: {
+            const units = parseFloat(document.getElementById('feat-footprint-units').value) || 15;
+            const area = parseFloat(document.getElementById('feat-footprint-area').value) || 14.8;
+            const result = units * area * 2.25; // 2.25 multiplier accounts for NFPA 855 setbacks
+            
+            valSpan.innerText = result.toFixed(1) + ' m²';
+            lblSpan.innerText = 'Total Sized BESS Layout Area';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Net unit enclosures area: <span class="step-math">A_{\\text{net}} = ${units} \\times ${area} = ${(units * area).toFixed(1)} \\, \\text{m}^2</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Apply NFPA 855 spatial clearance setback factor: <span class="step-math">A_{\\text{total}} = ${(units * area).toFixed(1)} \\times 2.25 = ${result.toFixed(1)} \\, \\text{m}^2</span></div></div>`;
+            break;
+        }
+        case 13: {
+            const mwh = parseFloat(document.getElementById('feat-auxdraw-mwh').value) || 60;
+            const factor = parseFloat(document.getElementById('feat-auxdraw-factor').value) || 1.5;
+            const result = mwh * 1000 * (factor / 100);
+            
+            valSpan.innerText = result.toFixed(1) + ' kW';
+            lblSpan.innerText = 'Continuous Auxiliary Power Draw';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Convert nominal capacity: <span class="step-math">E_{\\text{nominal}} = ${mwh * 1000} \\, \\text{kWh}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Apply auxiliary power consumption factor: <span class="step-math">P_{\\text{aux}} = ${mwh * 1000} \\times ${factor / 100} = ${result.toFixed(1)} \\, \\text{kW}</span></div></div>`;
+            break;
+        }
+        case 14: {
+            const kv = parseFloat(document.getElementById('feat-clearance-kv').value) || 115;
+            const result = 0.2 + 0.005 * Math.max(0, kv - 50);
+            
+            valSpan.innerText = result.toFixed(2) + ' m';
+            lblSpan.innerText = 'Electrical safety Clearance distance';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Base clearance at 50kV: <span class="step-math">D_{\\text{base}} = 0.2 \\, \\text{m}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Add 5mm per kV above 50kV: <span class="step-math">D = 0.2 + 0.005 \\times (${kv} - 50) = ${result.toFixed(2)} \\, \\text{m}</span></div></div>`;
+            break;
+        }
+        case 15: {
+            const units = parseFloat(document.getElementById('feat-delugew-units').value) || 25;
+            const flow = parseFloat(document.getElementById('feat-delugew-flow').value) || 45;
+            const result = units * flow * 120; // 120 mins duration for NFPA 15 standard
+            
+            valSpan.innerText = result.toLocaleString() + ' Gal';
+            lblSpan.innerText = 'NFPA 15 Fire Supp. Water Storage';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Total required flow rate: <span class="step-math">Q_{\\text{total}} = ${units} \\times ${flow} = ${units * flow} \\, \\text{GPM}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Multiply by NFPA 15 duration standard (120 mins): <span class="step-math">V_{\\text{deluge}} = ${units * flow} \\times 120 = ${result.toLocaleString()} \\, \\text{Gal}</span></div></div>`;
+            break;
+        }
+        case 16: {
+            const reserve = parseFloat(document.getElementById('feat-ffr-reserve') || document.getElementById('feat-ffr-mw').value) || 20;
+            const dev = parseFloat(document.getElementById('feat-ffr-dev').value) || 0.25;
+            const result = reserve * (dev / 0.5); // Assumed 0.5Hz trigger limit
+            
+            valSpan.innerText = result.toFixed(2) + ' MW';
+            lblSpan.innerText = 'Instantaneous FFR Power output';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Full active power reserve capacity: <span class="step-math">P_{\\text{reserve}} = ${reserve} \\, \\text{MW}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Calculate frequency trigger proportional ratio: <span class="step-math">P_{\\text{response}} = ${reserve} \\times \\frac{${dev}}{0.5} = ${result.toFixed(2)} \\, \\text{MW}</span></div></div>`;
+            break;
+        }
+        case 17: {
+            const mwh = parseFloat(document.getElementById('feat-roi-mwh').value) || 100;
+            const spread = parseFloat(document.getElementById('feat-roi-spread').value) || 45;
+            const result = mwh * spread * 0.90; // RTE factor
+            
+            valSpan.innerText = '$' + result.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            lblSpan.innerText = 'Estimated Daily Arbitrage Revenue';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Total battery capacity scheduled: <span class="step-math">E = ${mwh} \\, \\text{MWh}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Apply grid spread value and system RTE (90%): <span class="step-math">\\text{Revenue} = ${mwh} \\times ${spread} \\times 0.90 = $${result.toLocaleString()}</span></div></div>`;
+            break;
+        }
+        case 18: {
+            const mwh = parseFloat(document.getElementById('feat-co2-mwh').value) || 145000;
+            const ef = parseFloat(document.getElementById('feat-co2-ef').value) || 0.52;
+            const result = mwh * ef;
+            
+            valSpan.innerText = result.toLocaleString(undefined, {maximumFractionDigits: 1}) + ' Metric Tons';
+            lblSpan.innerText = 'Calculated CO2 Offsets Per Year';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Net solar plant electrical yield: <span class="step-math">E_{\\text{yield}} = ${mwh.toLocaleString()} \\, \\text{MWh}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Multiply by grid displacement factor: <span class="step-math">\\text{Offset} = ${mwh.toLocaleString()} \\times ${ef} = ${result.toFixed(1)} \\, \\text{tCO2e}</span></div></div>`;
+            break;
+        }
+        case 19: {
+            const mw = parseFloat(document.getElementById('feat-pqs-mw').value) || 25;
+            const thd = parseFloat(document.getElementById('feat-pqs-thd').value) || 4.5;
+            const result = mw * (thd / 100);
+            
+            valSpan.innerText = result.toFixed(3) + ' MVAR';
+            lblSpan.innerText = 'Power Quality harmonic compensation';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">BESS inverter capacity: <span class="step-math">P_{\\text{BESS}} = ${mw} \\, \\text{MW}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Harmonic current distortion factor: <span class="step-math">THD = ${thd}\\%</span></div></div>
+                <div class="calc-step"><span class="step-num">3</span><div class="step-text">Calculate reactive filtering compensation required: <span class="step-math">S_{\\text{compensation}} = ${mw} \\times ${thd/100} = ${result.toFixed(3)} \\, \\text{MVAR}</span></div></div>`;
+            break;
+        }
+        case 20: {
+            const count = parseFloat(document.getElementById('feat-wgt-count').value) || 18;
+            const mass = parseFloat(document.getElementById('feat-wgt-mass').value) || 38;
+            const result = count * mass * 9.81; // kilonewtons
+            
+            valSpan.innerText = result.toLocaleString(undefined, {maximumFractionDigits: 0}) + ' kN';
+            lblSpan.innerText = 'Total Sized System Weight Loading';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Net mass of containers: <span class="step-math">m_{\\text{total}} = ${count} \\times ${mass} = ${count * mass} \\, \\text{Tons}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Convert mass to loading force (g = 9.81m/s&sup2;): <span class="step-math">W = ${count * mass} \\times 10^3 \\, \\text{kg} \\times 9.81 = ${result.toFixed(0)} \\, \\text{kN}</span></div></div>`;
+            break;
+        }
+        case 21: {
+            const alt = parseFloat(document.getElementById('feat-alt-val').value) || 1800;
+            const factor = 1.0 - 0.0001 * Math.max(0, alt - 1000);
+            
+            valSpan.innerText = (factor * 100).toFixed(2) + ' %';
+            lblSpan.innerText = 'Calculated Altitude Derating Coefficient';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Altitude above standard 1000m headroom limit: <span class="step-math">h_{\\text{delta}} = \\max(0, ${alt} - 1000) = ${Math.max(0, alt - 1000)} \\, \\text{m}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Apply dielectric strength altitude reduction: <span class="step-math">K = 1.0 - 0.0001 \\times ${Math.max(0, alt - 1000)} = ${factor.toFixed(4)}</span></div></div>`;
+            break;
+        }
+        case 22: {
+            const amp = parseFloat(document.getElementById('feat-sts-amp').value) || 350;
+            const strings = parseFloat(document.getElementById('feat-sts-strings').value) || 12;
+            const result = (amp * strings * 1400) / 1000000; // 1400V DC nominal string potential
+            
+            valSpan.innerText = result.toFixed(3) + ' MW';
+            lblSpan.innerText = 'Jupiter STS nominal power throughput';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Total current injected at STS DC busbar: <span class="step-math">I_{\\text{total}} = ${amp} \\times ${strings} = ${amp * strings} \\, \\text{A}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Calculate power throughput at 1400V DC: <span class="step-math">P_{\\text{STS}} = \\frac{${amp * strings} \\times 1400}{10^6} = ${result.toFixed(3)} \\, \\text{MW}</span></div></div>`;
+            break;
+        }
+        case 23: {
+            const ms = parseFloat(document.getElementById('feat-brk-ms').value) || 85;
+            const ka = parseFloat(document.getElementById('feat-brk-ka').value) || 40;
+            const result = Math.pow(ka, 2) * (ms / 1000);
+            
+            valSpan.innerText = result.toFixed(3) + ' kA²s';
+            lblSpan.innerText = 'DC Active breaking let-through energy';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Rated breaking current squared: <span class="step-math">I^2 = ${ka}^2 = ${Math.pow(ka,2)} \\, \\text{kA}^2</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Calculate let-through energy: <span class="step-math">I^2t = ${Math.pow(ka,2)} \\times \\frac{${ms}}{1000} = ${result.toFixed(3)} \\, \\text{kA}^2\\text{s}</span></div></div>`;
+            break;
+        }
+        case 24: {
+            const strings = parseFloat(document.getElementById('feat-com-strings').value) || 24;
+            const current = parseFloat(document.getElementById('feat-com-current').value) || 15;
+            const result = strings * current * 1.25;
+            
+            valSpan.innerText = result.toFixed(1) + ' A';
+            lblSpan.innerText = 'Sub-array Comm Box busbar capacity';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Total continuous string current: <span class="step-math">I_{\\text{raw}} = ${strings} \\times ${current} = ${strings * current} \\, \\text{A}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Apply NEC safety headroom factor: <span class="step-math">I_{\\text{busbar}} = ${strings * current} \\times 1.25 = ${result.toFixed(1)} \\, \\text{A}</span></div></div>`;
+            break;
+        }
+        case 25: {
+            const soh = parseFloat(document.getElementById('feat-bal-soh').value) || 98.5;
+            const delta = parseFloat(document.getElementById('feat-bal-delta').value) || 12;
+            const result = (delta / 3200) * (soh / 100) * 100; // 3200mV average LFP potential
+            
+            valSpan.innerText = result.toFixed(3) + ' %';
+            lblSpan.innerText = 'SOC balance calibration variance';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Average LFP cell voltage reference: <span class="step-math">V_{\\text{avg}} = 3.2 \\, \\text{V}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Compute SOC variance based on voltage mismatch: <span class="step-math">\\text{Variance} = \\frac{${delta} \\, \\text{mV}}{3200 \\, \\text{mV}} \\times ${soh}\\% = ${result.toFixed(3)}\\%</span></div></div>`;
+            break;
+        }
+        case 26: {
+            const distance = parseFloat(document.getElementById('feat-c5-distance').value) || 450;
+            const result = 50 * Math.exp(-0.005 * distance);
+            
+            valSpan.innerText = result.toFixed(3) + ' &mu;m / Year';
+            lblSpan.innerText = 'Estimated marine C5 corrosion rate';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Distance to salt-water shoreline: <span class="step-math">d = ${distance} \\, \\text{meters}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Calculate annual metal layer degradation: <span class="step-math">\\text{Corrosion} = 50 \\times e^{-0.005 \\times ${distance}} = ${result.toFixed(3)} \\, \\mu\\text{m/yr}</span></div></div>`;
+            break;
+        }
+        case 27: {
+            const kw = parseFloat(document.getElementById('feat-hvacopt-kw').value) || 12;
+            const cop = parseFloat(document.getElementById('feat-hvacopt-cop').value) || 3.4;
+            const result = kw / cop;
+            
+            valSpan.innerText = result.toFixed(2) + ' kW';
+            lblSpan.innerText = 'Optimized net HVAC auxiliary draw';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Nominal BESS thermal continuous load: <span class="step-math">P_{\\text{raw}} = ${kw} \\, \\text{kW}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Apply high efficiency COP compressor factor: <span class="step-math">P_{\\text{net}} = \\frac{${kw}}{${cop}} = ${result.toFixed(2)} \\, \\text{kW}</span></div></div>`;
+            break;
+        }
+        case 28: {
+            const fund = parseFloat(document.getElementById('feat-thd-fund').value) || 1200;
+            const harm = parseFloat(document.getElementById('feat-thd-harm').value) || 36;
+            const result = (harm / fund) * 100;
+            
+            valSpan.innerText = result.toFixed(2) + ' %';
+            lblSpan.innerText = 'AC Busbar Total Harmonic Distortion';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Fundamental utility phase current: <span class="step-math">I_{\\text{fundamental}} = ${fund} \\, \\text{A}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Harmonic currents rms summation: <span class="step-math">I_{\\text{harmonics}} = ${harm} \\, \\text{A}</span></div></div>
+                <div class="calc-step"><span class="step-num">3</span><div class="step-text">Calculate current THD ratio: <span class="step-math">THD = \\frac{${harm}}{${fund}} \\times 100 = ${result.toFixed(2)}\\%</span></div></div>`;
+            break;
+        }
+        case 29: {
+            const h = parseFloat(document.getElementById('feat-gfm-h').value) || 4.5;
+            const power = parseFloat(document.getElementById('feat-gfm-power').value) || 30;
+            const result = 2 * power * h;
+            
+            valSpan.innerText = result.toFixed(1) + ' MW-s';
+            lblSpan.innerText = 'Virtual Inertia grid-forming support';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Grid-forming virtual inertia constant: <span class="step-math">H = ${h} \\, \\text{seconds}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Compute total kinetic energy reserve supplied: <span class="step-math">E_{\\text{inertia}} = 2 \\times ${power} \\times ${h} = ${result.toFixed(1)} \\, \\text{MW-s}</span></div></div>`;
+            break;
+        }
+        case 30: {
+            const amp = parseFloat(document.getElementById('feat-oc-amp').value) || 630;
+            const factor = parseFloat(document.getElementById('feat-oc-factor').value) || 1.25;
+            const result = amp * factor;
+            
+            valSpan.innerText = result.toFixed(1) + ' A';
+            lblSpan.innerText = 'Overcurrent Trip Setting limit';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Nominal system breaker rating: <span class="step-math">I_{\\text{nom}} = ${amp} \\, \\text{A}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Apply electrical overcurrent safety factor: <span class="step-math">I_{\\text{trip}} = ${amp} \\times ${factor} = ${result.toFixed(1)} \\, \\text{A}</span></div></div>`;
+            break;
+        }
+        case 31: {
+            const height = parseFloat(document.getElementById('feat-windf-height').value) || 2.8;
+            const sf = parseFloat(document.getElementById('feat-windf-sf').value) || 1.5;
+            const result = height * sf * 0.65;
+            
+            valSpan.innerText = result.toFixed(2) + ' m';
+            lblSpan.innerText = 'Required Foundation Pile depth';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Total structure tracker clearance height: <span class="step-math">h = ${height} \\, \\text{m}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Calculate minimum pile anchoring depth: <span class="step-math">D_{\\text{pile}} = ${height} \\times ${sf} \\times 0.65 = ${result.toFixed(2)} \\, \\text{m}</span></div></div>`;
+            break;
+        }
+        case 32: {
+            const m = parseFloat(document.getElementById('feat-dcrun-m').value) || 250;
+            const size = parseFloat(document.getElementById('feat-dcrun-size').value) || 70;
+            const result = 0.0172 * (m / size); // 0.0172 copper resistivity coefficient
+            
+            valSpan.innerText = result.toFixed(4) + ' &Omega;';
+            lblSpan.innerText = 'Total DC cable run resistance';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Copper electrical resistivity constant: <span class="step-math">\\rho = 0.0172 \\, \\Omega\\text{-mm}^2\\text{/m}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Calculate cable resistance: <span class="step-math">R_{\\text{dc}} = 0.0172 \\times \\frac{${m}}{${size}} = ${result.toFixed(4)} \\, \\Omega</span></div></div>`;
+            break;
+        }
+        case 33: {
+            const count = parseFloat(document.getElementById('feat-cir-count').value) || 4;
+            const angle = parseFloat(document.getElementById('feat-cir-angle').value) || 0.02;
+            const result = (480 * Math.sin(angle)) / 0.15; // Assumed 480V low side bus and 0.15 Ohm internal imp
+            
+            valSpan.innerText = result.toFixed(1) + ' A';
+            lblSpan.innerText = 'Aggregate Circulating Phase Currents';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Total parallel STS blocks: <span class="step-math">N = ${count} \\, \\text{units}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Phase angle discrepancy deviation: <span class="step-math">\\Delta \\theta = ${angle} \\, \\text{rad}</span></div></div>
+                <div class="calc-step"><span class="step-num">3</span><div class="step-text">Calculate circulating current at 480V: <span class="step-math">I_{\\text{circ}} = \\frac{480 \\times \\sin(${angle})}{0.15} = ${result.toFixed(1)} \\, \\text{A}</span></div></div>`;
+            break;
+        }
+        case 34: {
+            const load = parseFloat(document.getElementById('feat-hot-load').value) || 45;
+            const ambient = parseFloat(document.getElementById('feat-hot-ambient').value) || 38;
+            const result = ambient + 55 * Math.pow(load / 50, 1.6); // Assumed 50MVA rated substation transformer
+            
+            valSpan.innerText = result.toFixed(1) + ' &deg;C';
+            lblSpan.innerText = 'Transformer core hotspot temperature';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Substation design rated capacity: <span class="step-math">S_{\\text{rated}} = 50 \\, \\text{MVA}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Ambient air design temperature: <span class="step-math">T_{\\text{amb}} = ${ambient} \\, ^\\circ\\text{C}</span></div></div>
+                <div class="calc-step"><span class="step-num">3</span><div class="step-text">Compute transformer hotspot thermal limit: <span class="step-math">T_{\\text{hotspot}} = ${ambient} + 55 \\times \\left(\\frac{${load}}{50}\\right)^{1.6} = ${result.toFixed(1)} \\, ^\\circ\\text{C}</span></div></div>`;
+            break;
+        }
+        case 35: {
+            const capacity = parseFloat(document.getElementById('feat-irr-capacity').value) || 120;
+            const annualYield = parseFloat(document.getElementById('feat-irr-yield').value) || 1650;
+            const capex = capacity * 1000000 * 0.65; // $0.65 per watt base capex
+            const revenue = capacity * 1000 * annualYield * 0.082; // 0.082 USD/kWh net tariff
+            const result = (Math.pow(revenue / capex, 0.1) - 1.0) * 100;
+            
+            valSpan.innerText = result.toFixed(2) + ' %';
+            lblSpan.innerText = 'Projected 10-Year Equity IRR';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Calculated plant CAPEX ($0.65/W): <span class="step-math">CAPEX = $${(capex/1000000).toFixed(1)}M</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Estimated annual revenue ($0.082/kWh): <span class="step-math">\\text{Revenue} = $${(revenue/1000000).toFixed(2)}M</span></div></div>
+                <div class="calc-step"><span class="step-num">3</span><div class="step-text">Calculate projected project IRR: <span class="step-math">\\text{IRR} = ${result.toFixed(2)}\\%</span></div></div>`;
+            break;
+        }
+        case 36: {
+            const capacity = parseFloat(document.getElementById('feat-trans-capacity').value) || 50;
+            const factor = parseFloat(document.getElementById('feat-trans-factor').value) || 0.25;
+            const result = capacity * 1000 * (factor / 100);
+            
+            valSpan.innerText = result.toFixed(1) + ' kW';
+            lblSpan.innerText = 'Calculated Transformer Excitation Loss';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Convert substation capacity to kVA: <span class="step-math">S_{\\text{kVA}} = ${capacity} \\times 10^3 = ${capacity * 1000} \\, \\text{kVA}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Multiply by core excitation constant: <span class="step-math">P_{\\text{excitation}} = ${capacity * 1000} \\times ${factor / 100} = ${result.toFixed(1)} \\, \\text{kW}</span></div></div>`;
+            break;
+        }
+        case 37: {
+            const base = parseFloat(document.getElementById('feat-rtex-base').value) || 95;
+            const temp = parseFloat(document.getElementById('feat-rtex-temp').value) || 45;
+            const loss = 0.0015 * Math.max(0, temp - 25) * 100;
+            const result = base - loss;
+            
+            valSpan.innerText = result.toFixed(2) + ' %';
+            lblSpan.innerText = 'Temperature-Derated round-trip efficiency';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Compute cell delta above standard 25&deg;C: <span class="step-math">\\Delta T = ${temp} - 25 = ${temp - 25} \\, ^\\circ\\text{C}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Apply LFP temperature aging factor: <span class="step-math">\\text{Loss} = 0.15\\% \\times ${temp - 25} = ${loss.toFixed(2)}\\%</span></div></div>
+                <div class="calc-step"><span class="step-num">3</span><div class="step-text">Calculate net thermal derated efficiency: <span class="step-math">\\eta_{\\text{temp}} = ${base}\\% - ${loss.toFixed(2)}\\% = ${result.toFixed(2)}\\%</span></div></div>`;
+            break;
+        }
+        case 38: {
+            const amp = parseFloat(document.getElementById('feat-soil-amp').value) || 400;
+            const resist = parseFloat(document.getElementById('feat-soil-resist').value) || 1.8;
+            const factor = Math.sqrt(1.2 / resist);
+            const result = amp * factor;
+            
+            valSpan.innerText = result.toFixed(1) + ' A';
+            lblSpan.innerText = 'Calculated Safe Soil Ampacity Limit';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">IEEE 835 standard soil thermal resistance: <span class="step-math">R_{\\text{std}} = 1.2 \\, \\text{K-m/W}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Compute resistivity derating coefficient: <span class="step-math">F_{\\text{soil}} = \\sqrt{\\frac{1.2}{${resist}}} = ${factor.toFixed(3)}</span></div></div>
+                <div class="calc-step"><span class="step-num">3</span><div class="step-text">Apply current derating safety buffer: <span class="step-math">I_{\\text{derated}} = ${amp} \\times ${factor.toFixed(3)} = ${result.toFixed(1)} \\, \\text{A}</span></div></div>`;
+            break;
+        }
+        case 39: {
+            const power = parseFloat(document.getElementById('feat-rise-power').value) || 30;
+            const sc = parseFloat(document.getElementById('feat-rise-sc').value) || 1500;
+            const result = (power / sc) * 100;
+            
+            valSpan.innerText = result.toFixed(3) + ' %';
+            lblSpan.innerText = 'Substation Coupling Voltage Rise';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Injected active capacity: <span class="step-math">P = ${power} \\, \\text{MW}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Grid short-circuit stiffness: <span class="step-math">S_{\\text{sc}} = ${sc} \\, \\text{MVA}</span></div></div>
+                <div class="calc-step"><span class="step-num">3</span><div class="step-text">Calculate voltage shift at POI: <span class="step-math">\\Delta V_{\\%} = \\frac{${power}}{${sc}} \\times 100 = ${result.toFixed(3)}\\%</span></div></div>`;
+            break;
+        }
+        case 40: {
+            const current = parseFloat(document.getElementById('feat-imp-current').value) || 800;
+            const imp = parseFloat(document.getElementById('feat-imp-val').value) || 0.125;
+            const result = Math.sqrt(3) * current * imp * 1.5; // Assumed 1.5 km transmission run
+            
+            valSpan.innerText = result.toFixed(1) + ' V';
+            lblSpan.innerText = 'AC Side Cable Impedance Voltage Drop';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Continuous line current: <span class="step-math">I = ${current} \\, \\text{A}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Three-phase line impedance run (1.5 km): <span class="step-math">Z = ${imp} \\times 1.5 = ${imp * 1.5} \\, \\Omega</span></div></div>
+                <div class="calc-step"><span class="step-num">3</span><div class="step-text">AC line voltage drop: <span class="step-math">V_{\\text{drop}} = \\sqrt{3} \\times ${current} \\times ${imp * 1.5} = ${result.toFixed(1)} \\, \\text{V}</span></div></div>`;
+            break;
+        }
+        case 41: {
+            const oil = parseFloat(document.getElementById('feat-deluge-oil').value) || 8500;
+            const factor = parseFloat(document.getElementById('feat-deluge-factor').value) || 1.15;
+            const result = oil * factor;
+            
+            valSpan.innerText = result.toFixed(0) + ' Gal';
+            lblSpan.innerText = 'Transformer Oil Deluge Required Containment';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Base transformer oil capacity: <span class="step-math">V_{\\text{oil}} = ${oil} \\, \\text{Gal}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Apply safety overflow factor: <span class="step-math">V_{\\text{deluge}} = ${oil} \\times ${factor} = ${result.toFixed(0)} \\, \\text{Gal}</span></div></div>`;
+            break;
+        }
+        case 42: {
+            const ghi = parseFloat(document.getElementById('feat-ghi-val').value) || 1050;
+            const area = parseFloat(document.getElementById('feat-ghi-area').value) || 78;
+            const result = ghi * area * 0.15 * 0.35 / 1000; // Cop and absorption factor
+            
+            valSpan.innerText = result.toFixed(2) + ' kW';
+            lblSpan.innerText = 'High GHI Auxiliary HVAC Consumption';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Compute total solar thermal load: <span class="step-math">Q_{\\text{thermal}} = ${ghi} \\times ${area} = ${(ghi * area / 1000).toFixed(1)} \\, \\text{kW}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Apply absorption (15%) and HVAC COP (3.0): <span class="step-math">P_{\\text{HVAC}} = ${(ghi * area / 1000).toFixed(1)} \\times 0.15 \\times 0.35 = ${result.toFixed(2)} \\, \\text{kW}</span></div></div>`;
+            break;
+        }
+        case 43: {
+            const base = parseFloat(document.getElementById('feat-deg-base').value) || 1.8;
+            const soc = parseFloat(document.getElementById('feat-deg-soc').value) || 15;
+            const factor = Math.exp(-0.035 * soc);
+            const result = base * factor;
+            
+            valSpan.innerText = result.toFixed(3) + ' % / Year';
+            lblSpan.innerText = 'Mitigated Degradation Rate';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Base yearly capacity degradation: <span class="step-math">D_{\\text{base}} = ${base}\\%</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Compute degradation mitigation factor: <span class="step-math">F_{\\text{mitigate}} = e^{-0.035 \\times ${soc}} = ${factor.toFixed(3)}</span></div></div>
+                <div class="calc-step"><span class="step-num">3</span><div class="step-text">Calculate mitigated annual rate: <span class="step-math">D_{\\text{mitigated}} = ${base}\\% \\times ${factor.toFixed(3)} = ${result.toFixed(3)}\\%</span></div></div>`;
+            break;
+        }
+        case 44: {
+            const wind = parseFloat(document.getElementById('feat-typhoon-wind').value) || 280;
+            const area = parseFloat(document.getElementById('feat-typhoon-area').value) || 12000;
+            const result = 0.613 * Math.pow(wind / 3.6, 2) * area * 0.25 / 1000; // Lift coef
+            
+            valSpan.innerText = result.toFixed(1) + ' kN';
+            lblSpan.innerText = 'Typhoon Parking Structural Uplift Force';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Convert maximum wind velocity to m/s: <span class="step-math">v = \\frac{${wind}}{3.6} = ${(wind/3.6).toFixed(1)} \\, \\text{m/s}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Compute total horizontal uplift structural load: <span class="step-math">F_{\\text{uplift}} = 0.613 \\times ${(wind/3.6).toFixed(1)}^2 \\times ${area} \\times 0.25 = ${result.toFixed(1)} \\, \\text{kN}</span></div></div>`;
+            break;
+        }
+        case 45: {
+            const mass = parseFloat(document.getElementById('feat-gas-mass').value) || 18000;
+            const vent = parseFloat(document.getElementById('feat-gas-vent').value) || 1.8;
+            const result = vent * Math.sqrt(mass);
+            
+            valSpan.innerText = result.toFixed(1) + ' m';
+            lblSpan.innerText = 'LFP Gas Venting NFPA Safety Radius';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Total LFP active cell weight: <span class="step-math">m_{\\text{LFP}} = ${mass} \\, \\text{kg}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Apply safety distance venting equation: <span class="step-math">R_{\\text{safety}} = ${vent} \\times \\sqrt{${mass}} = ${result.toFixed(1)} \\, \\text{m}</span></div></div>`;
+            break;
+        }
+        case 46: {
+            const peak = parseFloat(document.getElementById('feat-dc-peak').value) || 125;
+            const ilr = parseFloat(document.getElementById('feat-dc-ilr').value) || 1.35;
+            const result = peak * (1 - 1 / ilr);
+            
+            valSpan.innerText = result.toFixed(2) + ' MW';
+            lblSpan.innerText = 'Clipped Active Power Surplus';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">DC capacity peak output: <span class="step-math">P_{\\text{DC}} = ${peak} \\, \\text{MW}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Inverter output capacity: <span class="step-math">P_{\\text{AC}} = \\frac{${peak}}{${ilr}} = ${(peak/ilr).toFixed(2)} \\, \\text{MW}</span></div></div>
+                <div class="calc-step"><span class="step-num">3</span><div class="step-text">Surplus clipped energy: <span class="step-math">P_{\\text{clipped}} = ${peak} - ${(peak/ilr).toFixed(2)} = ${result.toFixed(2)} \\, \\text{MW}</span></div></div>`;
+            break;
+        }
+        case 47: {
+            const fault = parseFloat(document.getElementById('feat-gpr-fault').value) || 25;
+            const res = parseFloat(document.getElementById('feat-gpr-res').value) || 0.45;
+            const result = fault * 1000 * res;
+            
+            valSpan.innerText = result.toFixed(0) + ' V';
+            lblSpan.innerText = 'Ground Potential Rise (GPR)';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Substation fault current: <span class="step-math">I_{\\text{fault}} = ${fault} \\, \\text{kA} = ${fault * 1000} \\, \\text{A}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Apply ground grid resistance step sizing: <span class="step-math">\\text{GPR} = ${fault * 1000} \\times ${res} = ${result.toFixed(0)} \\, \\text{V}</span></div></div>`;
+            break;
+        }
+        case 48: {
+            const power = parseFloat(document.getElementById('feat-bus-power').value) || 65;
+            const voltage = parseFloat(document.getElementById('feat-bus-voltage').value) || 115;
+            const result = (power * 1000) / (Math.sqrt(3) * voltage);
+            
+            valSpan.innerText = result.toFixed(1) + ' A';
+            lblSpan.innerText = 'Substation Busbar Ampacity Sizer';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Substation capacity load rating: <span class="step-math">S = ${power} \\, \\text{MVA} = ${power * 1000} \\, \\text{kVA}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Nominal busbar phase current: <span class="step-math">I = \\frac{${power * 1000}}{\\sqrt{3} \\times ${voltage}} = ${result.toFixed(1)} \\, \\text{A}</span></div></div>`;
+            break;
+        }
+        case 49: {
+            const power = parseFloat(document.getElementById('feat-pf-power').value) || 80;
+            const pf = parseFloat(document.getElementById('feat-pf-val').value) || 0.95;
+            const angle = Math.acos(pf);
+            const result = power * Math.tan(angle);
+            
+            valSpan.innerText = result.toFixed(2) + ' MVAR';
+            lblSpan.innerText = 'Reactive Power STATCOM Injection';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Grid displacement angle: <span class="step-math">\\theta = \\arccos(${pf}) = ${angle.toFixed(4)} \\, \\text{rad}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Target reactive compensation: <span class="step-math">Q = ${power} \\times \\tan(${angle.toFixed(4)}) = ${result.toFixed(2)} \\, \\text{MVAR}</span></div></div>`;
+            break;
+        }
+        case 50: {
+            const maxVal = parseFloat(document.getElementById('feat-imb-max').value) || 1498;
+            const minVal = parseFloat(document.getElementById('feat-imb-min').value) || 1476;
+            const avg = (maxVal + minVal) / 2;
+            const result = ((maxVal - minVal) / avg) * 100;
+            
+            valSpan.innerText = result.toFixed(3) + ' %';
+            lblSpan.innerText = 'Calculated String Level Imbalance';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Compute average string potential: <span class="step-math">V_{\\text{avg}} = \\frac{${maxVal} + ${minVal}}{2} = ${avg.toFixed(1)} \\, \\text{V}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Divide delta by average average: <span class="step-math">\\text{Imbalance} = \\frac{${maxVal} - ${minVal}}{${avg.toFixed(1)}} \\times 100 = ${result.toFixed(3)}\\%</span></div></div>`;
+            break;
+        }
+        case 51: {
+            const dev = parseFloat(document.getElementById('feat-freq-dev').value) || 0.15;
+            const droop = parseFloat(document.getElementById('feat-freq-droop').value) || 4;
+            const result = 100 * (dev / (60 * (droop / 100))); // Assumed 60Hz nominal
+            
+            valSpan.innerText = result.toFixed(2) + ' %';
+            lblSpan.innerText = 'Frequency Droop Active Sizing';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Grid nominal reference frequency: <span class="step-math">f_{\\text{nom}} = 60 \\, \\text{Hz}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Calculate frequency change to droop ratio: <span class="step-math">\\Delta P = \\frac{${dev}}{60 \\times ${droop / 100}} \\times 100\\% = ${result.toFixed(2)}\\%</span></div></div>`;
+            break;
+        }
+        case 52: {
+            const dc = parseFloat(document.getElementById('feat-clip-dc').value) || 150;
+            const ac = parseFloat(document.getElementById('feat-clip-ac').value) || 120;
+            const result = Math.max(0, dc - ac) * 4.8;
+            
+            valSpan.innerText = result.toFixed(1) + ' MWh / Day';
+            lblSpan.innerText = 'Calculated daily clipping loss';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Inverter clipping threshold: <span class="step-math">P_{\\text{clip}} = ${dc} - ${ac} = ${Math.max(0, dc-ac)} \\, \\text{MW}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Integrate daily peak hours (4.8h): <span class="step-math">E_{\\text{clipped}} = ${Math.max(0, dc-ac)} \\times 4.8 = ${result.toFixed(1)} \\, \\text{MWh}</span></div></div>`;
+            break;
+        }
+        case 53: {
+            const rate = parseFloat(document.getElementById('feat-soil-rate').value) || 0.18;
+            const days = parseFloat(document.getElementById('feat-soil-days').value) || 28;
+            const result = rate * days;
+            
+            valSpan.innerText = result.toFixed(2) + ' %';
+            lblSpan.innerText = 'Aggregate Cycle Soiling Power Loss';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Continuous dust accumulation per day: <span class="step-math">r_{\\text{soiling}} = ${rate}\\%</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Compute cumulative peak period loss: <span class="step-math">L = ${rate}\\% \\times ${days} = ${result.toFixed(2)}\\%</span></div></div>`;
+            break;
+        }
+        case 54: {
+            const coeff = parseFloat(document.getElementById('feat-bif-coeff').value) || 80;
+            const albedo = parseFloat(document.getElementById('feat-bif-albedo').value) || 22;
+            const result = (coeff / 100) * (albedo / 100) * 1.05 * 100;
+            
+            valSpan.innerText = result.toFixed(2) + ' %';
+            lblSpan.innerText = 'Net Bifacial Yield Gain';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Bifacial module efficiency coefficient: <span class="step-math">B_{\\text{coeff}} = ${coeff}\\%</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Measured ground albedo rating: <span class="step-math">\\alpha = ${albedo}\\%</span></div></div>
+                <div class="calc-step"><span class="step-num">3</span><div class="step-text">Compute total solar backside yield boost: <span class="step-math">G = ${coeff/100} \\times ${albedo/100} \\times 1.05 = ${result.toFixed(2)}\\%</span></div></div>`;
+            break;
+        }
+        case 55: {
+            const mwh = parseFloat(document.getElementById('feat-water-mwh').value) || 200;
+            const hours = parseFloat(document.getElementById('feat-water-hours').value) || 3.5;
+            const result = mwh * 120 * hours;
+            
+            valSpan.innerText = result.toLocaleString() + ' Gal';
+            lblSpan.innerText = 'Required Safety Fire Deluge Capacity';
+            
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">NFPA safety flow rate constant: <span class="step-math">R_{\\text{flow}} = 120 \\, \\text{gal/MWh/hour}</span></div></div>
+                <div class="calc-step"><span class="step-num">2</span><div class="step-text">Compute deluge water volume required: <span class="step-math">Q_{\\text{water}} = ${mwh} \\times 120 \\times ${hours} = ${result.toLocaleString()} \\, \\text{Gal}</span></div></div>`;
+            break;
+        }
+        default: {
+            const val = parseFloat(document.getElementById('feat-generic-val').value) || 50;
+            const res = val * 1.25;
+            valSpan.innerText = res.toFixed(2);
+            lblSpan.innerText = 'Calculated Engineering Metric';
+            stepsDiv.innerHTML = `
+                <div class="calc-step"><span class="step-num">1</span><div class="step-text">Apply sizing standard headroom coefficient: <span class="step-math">Y = ${val} \\times 1.25 = ${res.toFixed(2)}</span></div></div>`;
+            break;
+        }
+    }
+    triggerMathRendering();
+};
+
+function triggerMathRendering() {
+    const formulaDiv = document.getElementById('calc-formula');
+    if (formulaDiv) {
+        const latex = formulaDiv.getAttribute('data-latex');
+        const eqRender = formulaDiv.querySelector('.math-eq-render');
+        if (latex && eqRender) renderMathInElement(latex, eqRender, true);
+    }
+    document.querySelectorAll('.step-math').forEach(span => {
+        const latex = span.getAttribute('data-latex') || span.innerText;
+        if (latex) {
+            span.setAttribute('data-latex', latex);
+            renderMathInElement(latex, span, false);
+        }
+    });
+}
+
+function renderMathInElement(latex, element, isBlock = true) {
+    if (window.katex) {
+        try {
+            window.katex.render(latex, element, { throwOnError: false, displayMode: isBlock });
+        } catch (e) {
+            element.innerText = latex;
+        }
+    } else {
+        element.innerText = latex;
+    }
+}
+
+
+

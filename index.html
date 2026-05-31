@@ -27,6 +27,10 @@
     <!-- Lucide Icons -->
     <script src="https://unpkg.com/lucide@latest"></script>
     
+    <!-- KaTeX for beautiful math equations -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css">
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.js"></script>
+
     <!-- Custom CSS -->
     <link rel="stylesheet" href="styles.css">
 </head>
@@ -64,6 +68,28 @@
 
             <!-- Scrollable Settings Container -->
             <div class="sidebar-scroll">
+                <!-- Global Navigation Section -->
+                <section class="settings-section active" style="border: 1px solid rgba(59, 130, 246, 0.2); background: linear-gradient(135deg, rgba(59, 130, 246, 0.04) 0%, rgba(16, 185, 129, 0.02) 100%);">
+                    <div class="section-title">
+                        <i data-lucide="grid"></i>
+                        <h2 style="font-size: 0.8rem; letter-spacing: 0.5px; text-transform: uppercase;">Workspace Navigator</h2>
+                    </div>
+                    <div class="section-content" style="display: block; padding: 12px; display: flex; flex-direction: column; gap: 8px;">
+                        <button type="button" class="nav-item-btn active" data-screen="map" onclick="switchScreen('map')">
+                            <i data-lucide="map" class="nav-icon"></i> GIS Interactive Map
+                        </button>
+                        <button type="button" class="nav-item-btn" data-screen="sizer" onclick="switchScreen('sizer')">
+                            <i data-lucide="battery-charging" class="nav-icon"></i> Smart String Sizer
+                        </button>
+                        <button type="button" class="nav-item-btn" data-screen="products" onclick="switchScreen('products')">
+                            <i data-lucide="book-open" class="nav-icon"></i> BESS Product Catalog
+                        </button>
+                        <button type="button" class="nav-item-btn" data-screen="engineering" onclick="switchScreen('engineering')">
+                            <i data-lucide="cpu" class="nav-icon"></i> 55 Engineering Calcs
+                        </button>
+                    </div>
+                </section>
+
                 <!-- Location & Presets -->
                 <section class="settings-section active">
                     <div class="section-title" onclick="toggleSection(this)">
@@ -166,8 +192,6 @@
                                 <option value="megapack3">Tesla Megapack 3 (3.9 MWh - 40ft)</option>
                                 <option value="megapack2">Tesla Megapack 2 (2.6 MWh - 20ft)</option>
                                 <option value="luna4472">Huawei LUNA2000-4472 (4.47 MWh - 20ft Liquid Cooled)</option>
-                                <option value="luna200">Huawei LUNA2000-200KWH (0.2 MWh C&I Cabinet)</option>
-                                <option value="luna21">Huawei LUNA2000-21-S1 (0.02 MWh Residential)</option>
                                 <option value="industrial">High-Density Rack (5.0 MWh - 40ft)</option>
                             </select>
                         </div>
@@ -408,271 +432,649 @@
 
         <!-- Main Map Area & Right Dashboard -->
         <main class="main-content">
-            <!-- Top Premium Stats Banner -->
-            <header class="stats-banner" id="app-stats-banner">
-                <div class="stat-card">
-                    <span class="stat-label">Total Solar Capacity</span>
-                    <div class="stat-value-container">
-                        <span id="stat-pv-capacity" class="stat-value">0.00</span>
-                        <span class="stat-unit">MWp</span>
+            <!-- SCREEN 0: Interactive GIS Map -->
+            <div id="screen-map" class="app-screen active">
+                <!-- Top Premium Stats Banner -->
+                <header class="stats-banner" id="app-stats-banner">
+                    <div class="stat-card">
+                        <span class="stat-label">Total Solar Capacity</span>
+                        <div class="stat-value-container">
+                            <span id="stat-pv-capacity" class="stat-value">0.00</span>
+                            <span class="stat-unit">MWp</span>
+                        </div>
+                        <span class="stat-sub" id="stat-pv-panels">0 panels</span>
                     </div>
-                    <span class="stat-sub" id="stat-pv-panels">0 panels</span>
-                </div>
-                <div class="stat-card">
-                    <span class="stat-label">Total BESS Capacity</span>
-                    <div class="stat-value-container">
-                        <span id="stat-bess-capacity" class="stat-value">0.00</span>
-                        <span class="stat-unit">MWh</span>
+                    <div class="stat-card">
+                        <span class="stat-label">Total BESS Capacity</span>
+                        <div class="stat-value-container">
+                            <span id="stat-bess-capacity" class="stat-value">0.00</span>
+                            <span class="stat-unit">MWh</span>
+                        </div>
+                        <span class="stat-sub" id="stat-bess-containers">0 containers</span>
                     </div>
-                    <span class="stat-sub" id="stat-bess-containers">0 containers</span>
-                </div>
-                <div class="stat-card">
-                    <span class="stat-label">Project footprint</span>
-                    <div class="stat-value-container">
-                        <span id="stat-area" class="stat-value">0.0</span>
-                        <span class="stat-unit">ha</span>
+                    <div class="stat-card">
+                        <span class="stat-label">Project footprint</span>
+                        <div class="stat-value-container">
+                            <span id="stat-area" class="stat-value">0.0</span>
+                            <span class="stat-unit">ha</span>
+                        </div>
+                        <span class="stat-sub" id="stat-gcr">GCR: 0.0%</span>
                     </div>
-                    <span class="stat-sub" id="stat-gcr">GCR: 0.0%</span>
-                </div>
-                <div class="stat-card highlighted">
-                    <span class="stat-label">Est. Capital Expense</span>
-                    <div class="stat-value-container" style="display: flex; flex-direction: column; align-items: flex-start; gap: 2px;">
-                        <span id="stat-capex" class="stat-value" style="font-size: 1.35rem; line-height: 1;">$0.0M</span>
-                        <span id="stat-capex-php" class="stat-unit" style="font-size: 0.78rem; font-weight: 700; color: #dbeafe; opacity: 0.95;">₱0.00B PHP</span>
+                    <div class="stat-card highlighted">
+                        <span class="stat-label">Est. Capital Expense</span>
+                        <div class="stat-value-container" style="display: flex; flex-direction: column; align-items: flex-start; gap: 2px;">
+                            <span id="stat-capex" class="stat-value" style="font-size: 1.35rem; line-height: 1;">$0.0M</span>
+                            <span id="stat-capex-php" class="stat-unit" style="font-size: 0.78rem; font-weight: 700; color: #dbeafe; opacity: 0.95;">₱0.00B PHP</span>
+                        </div>
+                        <span class="stat-sub" id="stat-lcoe">Estimated LCOE: $0.0/MWh</span>
                     </div>
-                    <span class="stat-sub" id="stat-lcoe">Estimated LCOE: $0.0/MWh</span>
-                </div>
-            </header>
+                </header>
 
-            <!-- Map Container with Draw Toolbar Overlay -->
-            <div class="map-wrapper">
-                <div id="map"></div>
+                <!-- Map Container with Draw Toolbar Overlay -->
+                <div class="map-wrapper">
+                    <div id="map"></div>
 
-                <!-- Custom Floating Map Controls -->
-                <div class="map-floating-controls">
-                    <button class="map-control-btn active" id="layer-satellite" title="Satellite Base">
-                        <i data-lucide="globe"></i>
-                    </button>
-                    <button class="map-control-btn" id="layer-vector" title="Clean Vector Map">
-                        <i data-lucide="map"></i>
-                    </button>
-                    <div class="control-divider"></div>
-                    <button class="map-control-btn" id="tool-draw" title="Draw Site Boundary (Click points on map)">
-                        <i data-lucide="pen-tool"></i> Draw Boundary
-                    </button>
-                    <button class="map-control-btn" id="tool-complete" style="display: none; background-color: #3b82f6; color: white; font-weight: 600; padding: 0 12px; width: auto; gap: 4px;" title="Close and Complete the drawn boundary">
-                        <i data-lucide="check-circle-2"></i> Complete Shape
-                    </button>
-                    <button class="map-control-btn" id="tool-generate-default" title="Auto-Generate Standard Box Boundary" style="background-color: #ecfdf5; color: #059669; font-weight: 600; padding: 0 10px; width: auto; gap: 4px;">
-                        <i data-lucide="plus-square"></i> Auto-Generate Box
-                    </button>
-                    <button class="map-control-btn text-danger" id="tool-clear" title="Clear Design">
-                        <i data-lucide="trash-2"></i> Clear
-                    </button>
-                </div>
+                    <!-- Custom Floating Map Controls -->
+                    <div class="map-floating-controls">
+                        <button class="map-control-btn active" id="layer-satellite" title="Satellite Base">
+                            <i data-lucide="globe"></i>
+                        </button>
+                        <button class="map-control-btn" id="layer-vector" title="Clean Vector Map">
+                            <i data-lucide="map"></i>
+                        </button>
+                        <div class="control-divider"></div>
+                        <button class="map-control-btn" id="tool-draw" title="Draw Site Boundary (Click points on map)">
+                            <i data-lucide="pen-tool"></i> Draw Boundary
+                        </button>
+                        <button class="map-control-btn" id="tool-complete" style="display: none; background-color: #3b82f6; color: white; font-weight: 600; padding: 0 12px; width: auto; gap: 4px;" title="Close and Complete the drawn boundary">
+                            <i data-lucide="check-circle-2"></i> Complete Shape
+                        </button>
+                        <button class="map-control-btn" id="tool-generate-default" title="Auto-Generate Standard Box Boundary" style="background-color: #ecfdf5; color: #059669; font-weight: 600; padding: 0 10px; width: auto; gap: 4px;">
+                            <i data-lucide="plus-square"></i> Auto-Generate Box
+                        </button>
+                        <button class="map-control-btn text-danger" id="tool-clear" title="Clear Design">
+                            <i data-lucide="trash-2"></i> Clear
+                        </button>
+                    </div>
 
-                <!-- Interactive Tutorial / Helper Toast -->
-                <div class="helper-toast" id="helper-toast">
-                    <div class="toast-icon"><i data-lucide="info"></i></div>
-                    <div class="toast-text">
-                        <strong>Drawing Tip:</strong> Click points on the map to draw. Click near the first point, click <strong>"Complete Shape"</strong>, or press the <strong>[Spacebar]</strong> key to close and generate layout!
-                    </div>
-                    <button class="toast-close" onclick="document.getElementById('helper-toast').style.display='none'">×</button>
-                </div>
-            </div>
-
-            <!-- Engineering Analytical Dashboard Sheet (Tab Panel) -->
-            <section class="mobile-stats-sheet" id="detailed-specs-sheet">
-                <div class="sheet-header">
-                    <h3 style="white-space: nowrap;">40+ Advanced Computations</h3>
-                    <div class="sheet-tabs">
-                        <button class="sheet-tab-btn active" data-sheet-tab="pv">PV Yield</button>
-                        <button class="sheet-tab-btn" data-sheet-tab="electrical">Grid & AC</button>
-                        <button class="sheet-tab-btn" data-sheet-tab="bess">BESS Specs</button>
-                        <button class="sheet-tab-btn" data-sheet-tab="structural">Civil & Geotech</button>
-                    </div>
-                    <button id="sheet-close-btn">&times;</button>
-                </div>
-
-                <!-- PV PERFORMANCE TANE -->
-                <div class="sheet-tab-pane sheet-grid active" id="sheet-tab-pv">
-                    <div class="spec-tile">
-                        <span class="tile-lbl">Bifacial gain (IEC 61215)</span>
-                        <strong class="tile-val" id="spec-bifacial">+0.0%</strong>
-                    </div>
-                    <div class="spec-tile">
-                        <span class="tile-lbl">Temp loss (IEC 61215)</span>
-                        <strong class="tile-val" id="spec-temp-loss">0.0%</strong>
-                    </div>
-                    <div class="spec-tile">
-                        <span class="tile-lbl">LID & LeTID Degradation</span>
-                        <strong class="tile-val" id="spec-lid-loss">-0.55%</strong>
-                    </div>
-                    <div class="spec-tile">
-                        <span class="tile-lbl">Row-on-Row Shading Angle</span>
-                        <strong class="tile-val" id="spec-shading-angle">18.4°</strong>
-                    </div>
-                    <div class="spec-tile">
-                        <span class="tile-lbl">Inverter Efficiency (CEC)</span>
-                        <strong class="tile-val" id="spec-inv-eff">98.8%</strong>
-                    </div>
-                    <div class="spec-tile">
-                        <span class="tile-lbl">Mismatch Loss (String)</span>
-                        <strong class="tile-val" id="spec-mismatch-loss">-0.65%</strong>
-                    </div>
-                    <div class="spec-tile">
-                        <span class="tile-lbl">Near Shading Yield Loss</span>
-                        <strong class="tile-val" id="spec-near-shading">-1.2%</strong>
-                    </div>
-                    <div class="spec-tile">
-                        <span class="tile-lbl">Soiling Recovery Rate</span>
-                        <strong class="tile-val" id="spec-soiling-recovery">94.8%</strong>
+                    <!-- Interactive Tutorial / Helper Toast -->
+                    <div class="helper-toast" id="helper-toast">
+                        <div class="toast-icon"><i data-lucide="info"></i></div>
+                        <div class="toast-text">
+                            <strong>Drawing Tip:</strong> Click points on the map to draw. Click near the first point, click <strong>"Complete Shape"</strong>, or press the <strong>[Spacebar]</strong> key to close and generate layout!
+                        </div>
+                        <button class="toast-close" onclick="document.getElementById('helper-toast').style.display='none'">×</button>
                     </div>
                 </div>
 
-                <!-- ELECTRICAL TANE -->
-                <div class="sheet-tab-pane sheet-grid" id="sheet-tab-electrical">
-                    <div class="spec-tile">
-                        <span class="tile-lbl">DC cable loss (IEEE 446)</span>
-                        <strong class="tile-val" id="spec-cable-loss">0.0 kW</strong>
+                <!-- Engineering Analytical Dashboard Sheet (Tab Panel) -->
+                <section class="mobile-stats-sheet" id="detailed-specs-sheet">
+                    <div class="sheet-header">
+                        <h3 style="white-space: nowrap;">40+ Advanced Computations</h3>
+                        <div class="sheet-tabs">
+                            <button class="sheet-tab-btn active" data-sheet-tab="pv">PV Yield</button>
+                            <button class="sheet-tab-btn" data-sheet-tab="electrical">Grid & AC</button>
+                            <button class="sheet-tab-btn" data-sheet-tab="bess">BESS Specs</button>
+                            <button class="sheet-tab-btn" data-sheet-tab="structural">Civil & Geotech</button>
+                        </div>
+                        <button id="sheet-close-btn">&times;</button>
                     </div>
-                    <div class="spec-tile">
-                        <span class="tile-lbl">Inverter loading ILR</span>
-                        <strong class="tile-val" id="spec-ilr">1.25</strong>
-                    </div>
-                    <div class="spec-tile">
-                        <span class="tile-lbl">MV Transformer loss</span>
-                        <strong class="tile-val" id="spec-mv-loss">0.0%</strong>
-                    </div>
-                    <div class="spec-tile">
-                        <span class="tile-lbl">Substation AC loss</span>
-                        <strong class="tile-val" id="spec-substation-ac">-0.45%</strong>
-                    </div>
-                    <div class="spec-tile">
-                        <span class="tile-lbl">Transformer Core Loss</span>
-                        <strong class="tile-val" id="spec-core-loss">12.5 kW</strong>
-                    </div>
-                    <div class="spec-tile">
-                        <span class="tile-lbl">Soil Resistivity (IEEE 80)</span>
-                        <strong class="tile-val" id="spec-resistivity-ohms">150 Ω-m</strong>
-                    </div>
-                    <div class="spec-tile">
-                        <span class="tile-lbl">Grid Voltage compliance</span>
-                        <strong class="tile-val" id="spec-grid-compliance">IEEE 1547</strong>
-                    </div>
-                    <div class="spec-tile">
-                        <span class="tile-lbl">Substation Curtailment Limit</span>
-                        <strong class="tile-val" id="spec-curtailment">None (100%)</strong>
-                    </div>
-                </div>
 
-                <!-- BESS TANE -->
-                <div class="sheet-tab-pane sheet-grid" id="sheet-tab-bess">
-                    <div class="spec-tile">
-                        <span class="tile-lbl">BESS State of Health (SoH)</span>
-                        <strong class="tile-val" id="spec-bess-soh">98.2%</strong>
-                    </div>
-                    <div class="spec-tile">
-                        <span class="tile-lbl">Round Trip Efficiency</span>
-                        <strong class="tile-val" id="spec-bess-rte">89.5%</strong>
-                    </div>
-                    <div class="spec-tile">
-                        <span class="tile-lbl">Daily Self-Discharge</span>
-                        <strong class="tile-val" id="spec-self-discharge">0.12% / day</strong>
-                    </div>
-                    <div class="spec-tile">
-                        <span class="tile-lbl">Aux parasitic HVAC</span>
-                        <strong class="tile-val" id="spec-aux">0.0 kW</strong>
-                    </div>
-                    <div class="spec-tile">
-                        <span class="tile-lbl">NFPA Suppression Water</span>
-                        <strong class="tile-val" id="spec-fire-water">1,250 gal</strong>
-                    </div>
-                    <div class="spec-tile">
-                        <span class="tile-lbl">BESS DoD Constraint</span>
-                        <strong class="tile-val" id="spec-dod-limit">10% Min SoC</strong>
-                    </div>
-                    <div class="spec-tile">
-                        <span class="tile-lbl">Thermal runaway buffer</span>
-                        <strong class="tile-val" id="spec-thermal-runaway">15°C Margin</strong>
-                    </div>
-                    <div class="spec-tile">
-                        <span class="tile-lbl">NFPA 855 separation</span>
-                        <strong class="tile-val" id="spec-separation">3.0m Passed</strong>
-                    </div>
-                </div>
-
-                <!-- STRUCTURAL TANE -->
-                <div class="sheet-tab-pane sheet-grid" id="sheet-tab-structural">
-                    <div class="spec-tile">
-                        <span class="tile-lbl">Wind Load (ASCE 7)</span>
-                        <strong class="tile-val" id="spec-wind-pressure">0.00 kPa</strong>
-                    </div>
-                    <div class="spec-tile">
-                        <span class="tile-lbl">Seismic Acceleration (PGA)</span>
-                        <strong class="tile-val">0.32g (Medium)</strong>
-                    </div>
-                    <div class="spec-tile">
-                        <span class="tile-lbl">Anchorage Shear Load</span>
-                        <strong class="tile-val" id="spec-shear-load">42.5 kN</strong>
-                    </div>
-                    <div class="spec-tile">
-                        <span class="tile-lbl">Corrosivity Class</span>
-                        <strong class="tile-val" id="spec-corrosivity">ISO C3 Medium</strong>
-                    </div>
-                    <div class="spec-tile">
-                        <span class="tile-lbl">Soil Bearing capacity</span>
-                        <strong class="tile-val" id="spec-soil-bearing">120 kPa</strong>
-                    </div>
-                    <div class="spec-tile">
-                        <span class="tile-lbl">Piling Embedment depth</span>
-                        <strong class="tile-val" id="spec-piling-depth">2.45 meters</strong>
-                    </div>
-                    <div class="spec-tile">
-                        <span class="tile-lbl">Civil Cut/Fill Volume</span>
-                        <strong class="tile-val" id="spec-civil-cut">840 m³</strong>
-                    </div>
-                    <div class="spec-tile">
-                        <span class="tile-lbl">Carbon Offsets / Year</span>
-                        <strong class="tile-val" id="spec-co2-offset">0 tons CO₂</strong>
-                    </div>
-                </div>
-            </section>
-
-            <!-- Bottom Analytics & Yield Tab panel - Heavily Compacted to Enlarge Map -->
-            <footer class="analytics-panel">
-                <div class="analytics-header">
-                    <h3>Performance & Economic Simulation</h3>
-                    <div class="analytics-tabs">
-                        <button class="tab-btn active" data-tab="yield">Energy Yield Profile</button>
-                        <button class="tab-btn" data-tab="economics">Financial Return</button>
-                        <button class="tab-btn" data-tab="pvsyst">PVsyst Loss Waterfall</button>
-                    </div>
-                </div>
-                <div class="analytics-content">
-                    <div class="tab-pane active" id="tab-yield">
-                        <div class="chart-container">
-                            <canvas id="yieldChart"></canvas>
+                    <!-- PV PERFORMANCE TANE -->
+                    <div class="sheet-tab-pane sheet-grid active" id="sheet-tab-pv">
+                        <div class="spec-tile">
+                            <span class="tile-lbl">Bifacial gain (IEC 61215)</span>
+                            <strong class="tile-val" id="spec-bifacial">+0.0%</strong>
+                        </div>
+                        <div class="spec-tile">
+                            <span class="tile-lbl">Temp loss (IEC 61215)</span>
+                            <strong class="tile-val" id="spec-temp-loss">0.0%</strong>
+                        </div>
+                        <div class="spec-tile">
+                            <span class="tile-lbl">LID & LeTID Degradation</span>
+                            <strong class="tile-val" id="spec-lid-loss">-0.55%</strong>
+                        </div>
+                        <div class="spec-tile">
+                            <span class="tile-lbl">Row-on-Row Shading Angle</span>
+                            <strong class="tile-val" id="spec-shading-angle">18.4°</strong>
+                        </div>
+                        <div class="spec-tile">
+                            <span class="tile-lbl">Inverter Efficiency (CEC)</span>
+                            <strong class="tile-val" id="spec-inv-eff">98.8%</strong>
+                        </div>
+                        <div class="spec-tile">
+                            <span class="tile-lbl">Mismatch Loss (String)</span>
+                            <strong class="tile-val" id="spec-mismatch-loss">-0.65%</strong>
+                        </div>
+                        <div class="spec-tile">
+                            <span class="tile-lbl">Near Shading Yield Loss</span>
+                            <strong class="tile-val" id="spec-near-shading">-1.2%</strong>
+                        </div>
+                        <div class="spec-tile">
+                            <span class="tile-lbl">Soiling Recovery Rate</span>
+                            <strong class="tile-val" id="spec-soiling-recovery">94.8%</strong>
                         </div>
                     </div>
-                    <div class="tab-pane" id="tab-economics">
-                        <div class="chart-container">
-                            <canvas id="economicsChart"></canvas>
+
+                    <!-- ELECTRICAL TANE -->
+                    <div class="sheet-tab-pane sheet-grid" id="sheet-tab-electrical">
+                        <div class="spec-tile">
+                            <span class="tile-lbl">DC cable loss (IEEE 446)</span>
+                            <strong class="tile-val" id="spec-cable-loss">0.0 kW</strong>
+                        </div>
+                        <div class="spec-tile">
+                            <span class="tile-lbl">Inverter loading ILR</span>
+                            <strong class="tile-val" id="spec-ilr">1.25</strong>
+                        </div>
+                        <div class="spec-tile">
+                            <span class="tile-lbl">MV Transformer loss</span>
+                            <strong class="tile-val" id="spec-mv-loss">0.0%</strong>
+                        </div>
+                        <div class="spec-tile">
+                            <span class="tile-lbl">Substation AC loss</span>
+                            <strong class="tile-val" id="spec-substation-ac">-0.45%</strong>
+                        </div>
+                        <div class="spec-tile">
+                            <span class="tile-lbl">Transformer Core Loss</span>
+                            <strong class="tile-val" id="spec-core-loss">12.5 kW</strong>
+                        </div>
+                        <div class="spec-tile">
+                            <span class="tile-lbl">Soil Resistivity (IEEE 80)</span>
+                            <strong class="tile-val" id="spec-resistivity-ohms">150 Ω-m</strong>
+                        </div>
+                        <div class="spec-tile">
+                            <span class="tile-lbl">Grid Voltage compliance</span>
+                            <strong class="tile-val" id="spec-grid-compliance">IEEE 1547</strong>
+                        </div>
+                        <div class="spec-tile">
+                            <span class="tile-lbl">Substation Curtailment Limit</span>
+                            <strong class="tile-val" id="spec-curtailment">None (100%)</strong>
                         </div>
                     </div>
-                    <div class="tab-pane" id="tab-pvsyst">
-                        <div class="pvsyst-loss-container">
-                            <div class="pvsyst-header-row">
-                                <span>PVsyst Simulation Energy Loss Waterfall Diagram</span>
-                                <span class="pvsyst-badge">IEC 61724 Standard</span>
-                            </div>
-                            <div class="pvsyst-loss-flow" id="pvsyst-loss-flow-list">
-                                <!-- Dynamically Rendered Waterfall Loss Nodes -->
+
+                    <!-- BESS TANE -->
+                    <div class="sheet-tab-pane sheet-grid" id="sheet-tab-bess">
+                        <div class="spec-tile">
+                            <span class="tile-lbl">BESS State of Health (SoH)</span>
+                            <strong class="tile-val" id="spec-bess-soh">98.2%</strong>
+                        </div>
+                        <div class="spec-tile">
+                            <span class="tile-lbl">Round Trip Efficiency</span>
+                            <strong class="tile-val" id="spec-bess-rte">89.5%</strong>
+                        </div>
+                        <div class="spec-tile">
+                            <span class="tile-lbl">Daily Self-Discharge</span>
+                            <strong class="tile-val" id="spec-self-discharge">0.12% / day</strong>
+                        </div>
+                        <div class="spec-tile">
+                            <span class="tile-lbl">Aux parasitic HVAC</span>
+                            <strong class="tile-val" id="spec-aux">0.0 kW</strong>
+                        </div>
+                        <div class="spec-tile">
+                            <span class="tile-lbl">NFPA Suppression Water</span>
+                            <strong class="tile-val" id="spec-fire-water">1,250 gal</strong>
+                        </div>
+                        <div class="spec-tile">
+                            <span class="tile-lbl">BESS DoD Constraint</span>
+                            <strong class="tile-val" id="spec-dod-limit">10% Min SoC</strong>
+                        </div>
+                        <div class="spec-tile">
+                            <span class="tile-lbl">Thermal runaway buffer</span>
+                            <strong class="tile-val" id="spec-thermal-runaway">15°C Margin</strong>
+                        </div>
+                        <div class="spec-tile">
+                            <span class="tile-lbl">NFPA 855 separation</span>
+                            <strong class="tile-val" id="spec-separation">3.0m Passed</strong>
+                        </div>
+                    </div>
+
+                    <!-- STRUCTURAL TANE -->
+                    <div class="sheet-tab-pane sheet-grid" id="sheet-tab-structural">
+                        <div class="spec-tile">
+                            <span class="tile-lbl">Wind Load (ASCE 7)</span>
+                            <strong class="tile-val" id="spec-wind-pressure">0.00 kPa</strong>
+                        </div>
+                        <div class="spec-tile">
+                            <span class="tile-lbl">Seismic Acceleration (PGA)</span>
+                            <strong class="tile-val">0.32g (Medium)</strong>
+                        </div>
+                        <div class="spec-tile">
+                            <span class="tile-lbl">Anchorage Shear Load</span>
+                            <strong class="tile-val" id="spec-shear-load">42.5 kN</strong>
+                        </div>
+                        <div class="spec-tile">
+                            <span class="tile-lbl">Corrosivity Class</span>
+                            <strong class="tile-val" id="spec-corrosivity">ISO C3 Medium</strong>
+                        </div>
+                        <div class="spec-tile">
+                            <span class="tile-lbl">Soil Bearing capacity</span>
+                            <strong class="tile-val" id="spec-soil-bearing">120 kPa</strong>
+                        </div>
+                        <div class="spec-tile">
+                            <span class="tile-lbl">Piling Embedment depth</span>
+                            <strong class="tile-val" id="spec-piling-depth">2.45 meters</strong>
+                        </div>
+                        <div class="spec-tile">
+                            <span class="tile-lbl">Civil Cut/Fill Volume</span>
+                            <strong class="tile-val" id="spec-civil-cut">840 m³</strong>
+                        </div>
+                        <div class="spec-tile">
+                            <span class="tile-lbl">Carbon Offsets / Year</span>
+                            <strong class="tile-val" id="spec-co2-offset">0 tons CO₂</strong>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Bottom Analytics & Yield Tab panel -->
+                <footer class="analytics-panel">
+                    <div class="analytics-header">
+                        <h3>Performance & Economic Simulation</h3>
+                        <div class="analytics-tabs">
+                            <button class="tab-btn active" data-tab="yield">Energy Yield Profile</button>
+                            <button class="tab-btn" data-tab="economics">Financial Return</button>
+                            <button class="tab-btn" data-tab="pvsyst">PVsyst Loss Waterfall</button>
+                        </div>
+                    </div>
+                    <div class="analytics-content">
+                        <div class="tab-pane active" id="tab-yield">
+                            <div class="chart-container">
+                                <canvas id="yieldChart"></canvas>
                             </div>
                         </div>
+                        <div class="tab-pane" id="tab-economics">
+                            <div class="chart-container">
+                                <canvas id="economicsChart"></canvas>
+                            </div>
+                        </div>
+                        <div class="tab-pane" id="tab-pvsyst">
+                            <div class="pvsyst-loss-container">
+                                <div class="pvsyst-header-row">
+                                    <span>PVsyst Simulation Energy Loss Waterfall Diagram</span>
+                                    <span class="pvsyst-badge">IEC 61724 Standard</span>
+                                </div>
+                                <div class="pvsyst-loss-flow" id="pvsyst-loss-flow-list">
+                                    <!-- Dynamically Rendered Waterfall Loss Nodes -->
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </footer>
+            </div> <!-- /#screen-map -->
+
+            <!-- SCREEN 1: BESS Sizing Configurator -->
+            <div id="screen-sizer" class="app-screen" style="display: none;">
+                <div class="header-bar">
+                    <div class="header-title">
+                        <h1>Smart String BESS Sizing</h1>
+                        <p>Define operational boundaries, integrate PV systems, and auto-recommend Huawei energy storage solutions.</p>
+                    </div>
+                    <button class="btn btn-secondary" onclick="window.print()">
+                        <i data-lucide="file-text"></i> Export Engineering Report
+                    </button>
+                </div>
+
+                <div class="grid-1-2" style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 16px;">
+                    <!-- Left parameters form -->
+                    <div class="card-panel flex-column gap-16" style="display: flex; flex-direction: column; gap: 16px;">
+                        <h2 class="panel-title">
+                            <i data-lucide="sliders"></i> Sizing Objectives
+                        </h2>
+                        
+                        <div class="form-group">
+                            <label for="application-type">Market Segment / Application</label>
+                            <select id="application-type" onchange="handleAppChange()">
+                                <option value="utility">Utility Scale (Smart String Container)</option>
+                            </select>
+                        </div>
+
+                        <!-- Optional Solar Integration -->
+                        <div class="switch-group" style="display: flex; justify-content: space-between; align-items: center;">
+                            <div class="flex-column" style="display: flex; flex-direction: column;">
+                                <label>Include Solar Power Plant?</label>
+                                <span style="font-size: 0.75rem; color: var(--text-secondary);">Decide best BESS size based on PV generation</span>
+                            </div>
+                            <label class="switch">
+                                <input type="checkbox" id="include-solar" checked onchange="toggleSolarPanel()">
+                                <span class="slider"></span>
+                            </label>
+                        </div>
+
+                        <!-- Solar Input Group -->
+                        <div id="solar-input-group" class="flex-column gap-16" style="display: flex; flex-direction: column; gap: 16px;">
+                            <div class="form-group">
+                                <label for="solar-mw">Solar Power Plant Capacity (MW)</label>
+                                <div class="slider-container">
+                                    <input type="range" id="solar-mw" min="1" max="250" value="50" oninput="updateSizing()">
+                                    <span class="slider-val" id="solar-mw-val">50 MW</span>
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label for="pv-penetration">Target PV Sizing Storage Ratio (%)</label>
+                                <div class="slider-container">
+                                    <input type="range" id="pv-penetration" min="5" max="100" value="30" oninput="updateSizing()">
+                                    <span class="slider-val" id="pv-penetration-val">30 %</span>
+                                </div>
+                            </div>
+                            <!-- Philippines DOE 20% Sizing Rule -->
+                            <div class="switch-group" style="background: rgba(239, 68, 68, 0.03); border: 1px dashed rgba(239, 68, 68, 0.2); display: flex; justify-content: space-between;">
+                                <div class="flex-column" style="display: flex; flex-direction: column;">
+                                    <label style="color: var(--danger); font-weight: 700;">Philippines DOE 20% Mandate</label>
+                                    <span style="font-size: 0.72rem; color: var(--text-secondary);">Enforce BESS MW &ge; 20% of Solar Plant capacity</span>
+                                </div>
+                                <label class="switch">
+                                    <input type="checkbox" id="ph-doe-mandate" checked onchange="updateSizing()">
+                                    <span class="slider"></span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <!-- Standard Energy Sizing Inputs -->
+                        <div class="form-group">
+                            <label for="target-power">Target Output Power (MW)</label>
+                            <div class="slider-container">
+                                <input type="range" id="target-power" min="0.1" max="100" step="0.1" value="15" oninput="updateSizing()">
+                                <span class="slider-val" id="target-power-val">15 MW</span>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="target-duration">Discharge Duration (Hours)</label>
+                            <div class="slider-container">
+                                <input type="range" id="target-duration" min="0.5" max="8" step="0.5" value="2" oninput="updateSizing()">
+                                <span class="slider-val" id="target-duration-val">2 Hrs</span>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="dod-limit">Depth of Discharge (DOD) Limit (%)</label>
+                            <div class="slider-container">
+                                <input type="range" id="dod-limit" min="50" max="100" value="90" oninput="updateSizing()">
+                                <span class="slider-val" id="dod-limit-val">90 %</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Right outputs and interactive charts -->
+                    <div class="flex-column gap-24" style="display: flex; flex-direction: column; gap: 24px;">
+                        <!-- Key Sizing results -->
+                        <div class="stats-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                            <div class="stat-card" style="border-left: 4px solid var(--danger);">
+                                <span class="stat-label">Calculated Usable Capacity</span>
+                                <span class="stat-value" id="calc-usable">30.00 MWh</span>
+                                <span class="stat-desc">Target load delivery requirement</span>
+                            </div>
+                            <div class="stat-card" style="border-left: 4px solid var(--warning);">
+                                <span class="stat-label">Minimum Nominal Capacity</span>
+                                <span class="stat-value" id="calc-nominal">33.33 MWh</span>
+                                <span class="stat-desc">Compensated for Depth of Discharge</span>
+                            </div>
+                        </div>
+
+                        <!-- Graphical load shifting & PV integration simulation -->
+                        <div class="card-panel">
+                            <h2 class="panel-title">
+                                <i data-lucide="bar-chart-3"></i> 24H Generation vs BESS State-of-Charge (SOC)
+                            </h2>
+                            <div class="chart-container" style="height: 250px; position: relative;">
+                                <canvas id="sizingSimulationChart"></canvas>
+                            </div>
+                        </div>
+
+                        <!-- Huawei Product Recommendation Box -->
+                        <div class="card-panel" style="border: 1px solid rgba(245, 158, 11, 0.3);">
+                            <h2 class="panel-title" style="border-bottom: none; margin-bottom: 0;">
+                                <i data-lucide="award"></i> Recommended Huawei Smart String Solution
+                            </h2>
+                            
+                            <div class="bess-card recommended" style="margin-top: 16px;">
+                                <div class="bess-badge">Best Fit</div>
+                                <div style="display: grid; grid-template-columns: 100px 1fr; gap: 16px; align-items: center; margin-top: 8px;">
+                                    <div class="bess-img" style="height: 100px; display: flex; align-items: center; justify-content: center;">
+                                        <div class="container-mockup" style="width: 80px; height: 50px;">
+                                            <div class="container-door" style="height: 35px; width: 16px;"></div>
+                                            <div class="container-door" style="height: 35px; width: 16px;"></div>
+                                        </div>
+                                    </div>
+                                    <div class="flex-column gap-16" style="display: flex; flex-direction: column; gap: 8px;">
+                                        <h3 class="bess-card-title" id="rec-model-name" style="font-size: 1.1rem; color: var(--text-primary);">LUNA2000-2.0MWH-1H0</h3>
+                                        <div class="bess-spec-list" style="display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem;">
+                                            <div class="bess-spec-item" style="display: flex; justify-content: space-between;">
+                                                <span class="bess-spec-lbl">Required Units:</span>
+                                                <strong class="bess-spec-val" id="rec-units">17 Units</strong>
+                                            </div>
+                                            <div class="bess-spec-item" style="display: flex; justify-content: space-between;">
+                                                <span class="bess-spec-lbl">Nominal System Power:</span>
+                                                <strong class="bess-spec-val" id="rec-power">34.00 MW</strong>
+                                            </div>
+                                            <div class="bess-spec-item" style="display: flex; justify-content: space-between;">
+                                                <span class="bess-spec-lbl">Nominal System Energy:</span>
+                                                <strong class="bess-spec-val" id="rec-energy">34.00 MWh</strong>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
-            </footer>
+            </div> <!-- /#screen-sizer -->
+
+            <!-- SCREEN 2: BESS Catalog -->
+            <div id="screen-products" class="app-screen" style="display: none;">
+                <div class="header-bar">
+                    <div class="header-title">
+                        <h1>Huawei Smart String Energy Storage Catalog</h1>
+                        <p>Discover leading energy storage hardware incorporating smart string structures for high efficiency and reliability.</p>
+                    </div>
+                </div>
+
+                <div class="bess-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 24px; margin-top: 16px;">
+                    <!-- New High Capacity Utility Scale -->
+                    <div class="bess-card recommended">
+                        <span class="bess-badge">NEW 4.47 MWh</span>
+                        <div class="bess-img" style="height: 140px; display: flex; align-items: center; justify-content: center; background: #fafafa; border-radius: var(--radius-md);">
+                            <div class="container-mockup" style="border-color: var(--warning); width: 140px; height: 70px;">
+                                <div class="container-door" style="height: 50px; width: 22px;"></div>
+                                <div class="container-door" style="height: 50px; width: 22px;"></div>
+                                <div class="container-door" style="height: 50px; width: 22px;"></div>
+                            </div>
+                        </div>
+                        <h3 class="bess-card-title">LUNA2000-4472-2S</h3>
+                        <p style="font-size: 0.8rem; color: var(--text-secondary);">Highest density liquid-cooled Smart String ESS container with all-architecture safety.</p>
+                        <div class="bess-spec-list" style="display: flex; flex-direction: column; gap: 6px; font-size: 0.82rem; margin-top: 8px;">
+                            <div class="bess-spec-item" style="display: flex; justify-content: space-between;"><span>Nominal Capacity</span><strong>4,472 kWh</strong></div>
+                            <div class="bess-spec-item" style="display: flex; justify-content: space-between;"><span>Rated DC Voltage</span><strong>1,331.2 V</strong></div>
+                            <div class="bess-spec-item" style="display: flex; justify-content: space-between;"><span>Charge / Discharge</span><strong>&le; 0.5 C</strong></div>
+                            <div class="bess-spec-item" style="display: flex; justify-content: space-between;"><span>Total Weight</span><strong>&le; 42,000 kg</strong></div>
+                        </div>
+                    </div>
+
+                    <!-- Smart PCS Inverter -->
+                    <div class="bess-card">
+                        <span class="bess-badge" style="background: var(--secondary);">Smart PCS</span>
+                        <div class="bess-img" style="height: 140px; display: flex; align-items: center; justify-content: center; background: #fafafa; border-radius: var(--radius-md);">
+                            <div style="width: 70px; height: 70px; border: 2px solid var(--border); border-radius: 8px; background: #fff; display: flex; align-items: center; justify-content: center; position: relative;">
+                                <div style="width: 40px; height: 10px; background: var(--danger); border-radius: 2px; position: absolute; top: 10px;"></div>
+                                <div style="font-size: 0.6rem; font-weight: 800; color: #333; margin-top: 15px;">213KTL</div>
+                            </div>
+                        </div>
+                        <h3 class="bess-card-title">LUNA2000-213KTL-H0</h3>
+                        <p style="font-size: 0.8rem; color: var(--text-secondary);">Smart grid-forming Power Conversion System (PCS) with active breaking safety.</p>
+                        <div class="bess-spec-list" style="display: flex; flex-direction: column; gap: 6px; font-size: 0.82rem; margin-top: 8px;">
+                            <div class="bess-spec-item" style="display: flex; justify-content: space-between;"><span>Max Efficiency</span><strong>99.01 %</strong></div>
+                            <div class="bess-spec-item" style="display: flex; justify-content: space-between;"><span>Rated Active Power</span><strong>213 kW @ 40&deg;C</strong></div>
+                            <div class="bess-spec-item" style="display: flex; justify-content: space-between;"><span>Max DC Voltage</span><strong>1,500 V</strong></div>
+                            <div class="bess-spec-item" style="display: flex; justify-content: space-between;"><span>THD-i</span><strong>&le; 1.5 % (Rated)</strong></div>
+                        </div>
+                    </div>
+
+                    <!-- Utility Scale 2.0MWH -->
+                    <div class="bess-card">
+                        <span class="bess-badge" style="background: var(--text-secondary);">Utility 2.0 MWh</span>
+                        <div class="bess-img" style="height: 140px; display: flex; align-items: center; justify-content: center; background: #fafafa; border-radius: var(--radius-md);">
+                            <div class="container-mockup" style="width: 120px; height: 60px;">
+                                <div class="container-door" style="height: 40px; width: 20px;"></div>
+                                <div class="container-door" style="height: 40px; width: 20px;"></div>
+                            </div>
+                        </div>
+                        <h3 class="bess-card-title">LUNA2000-2.0MWH-2H0</h3>
+                        <p style="font-size: 0.8rem; color: var(--text-secondary);">Utility-scale Smart String Energy Storage Container using highly advanced liquid cooling.</p>
+                        <div class="bess-spec-list" style="display: flex; flex-direction: column; gap: 6px; font-size: 0.82rem; margin-top: 8px;">
+                            <div class="bess-spec-item" style="display: flex; justify-content: space-between;"><span>Nominal Energy</span><strong>2,000 kWh</strong></div>
+                            <div class="bess-spec-item" style="display: flex; justify-content: space-between;"><span>Max Power PCS</span><strong>1,000 kW</strong></div>
+                            <div class="bess-spec-item" style="display: flex; justify-content: space-between;"><span>Cooling Method</span><strong>Liquid Cooled</strong></div>
+                            <div class="bess-spec-item" style="display: flex; justify-content: space-between;"><span>Dimensions</span><strong>20ft Container</strong></div>
+                        </div>
+                    </div>
+
+                    <!-- Commercial Scale -->
+                    <div class="bess-card">
+                        <span class="bess-badge" style="background: var(--secondary);">Commercial & C&I</span>
+                        <div class="bess-img" style="height: 140px; display: flex; align-items: center; justify-content: center; background: #fafafa; border-radius: var(--radius-md);">
+                            <div class="container-mockup" style="width: 90px; height: 75px;">
+                                <div class="container-door" style="width: 22px; height: 55px;"></div>
+                                <div class="container-door" style="width: 22px; height: 55px;"></div>
+                            </div>
+                        </div>
+                        <h3 class="bess-card-title">LUNA2000-200KWH-2H1</h3>
+                        <p style="font-size: 0.8rem; color: var(--text-secondary);">Premium commercial smart outdoor cabinet container optimal for load shifting.</p>
+                        <div class="bess-spec-list" style="display: flex; flex-direction: column; gap: 6px; font-size: 0.82rem; margin-top: 8px;">
+                            <div class="bess-spec-item" style="display: flex; justify-content: space-between;"><span>Nominal Energy</span><strong>200 kWh</strong></div>
+                            <div class="bess-spec-item" style="display: flex; justify-content: space-between;"><span>Max Power PCS</span><strong>100 kW</strong></div>
+                            <div class="bess-spec-item" style="display: flex; justify-content: space-between;"><span>Cooling Method</span><strong>Smart Air Cooled</strong></div>
+                            <div class="bess-spec-item" style="display: flex; justify-content: space-between;"><span>Weight</span><strong>~2,200 kg</strong></div>
+                        </div>
+                    </div>
+
+                    <!-- Residential Scale -->
+                    <div class="bess-card">
+                        <span class="bess-badge" style="background: var(--warning);">Residential</span>
+                        <div class="bess-img" style="height: 140px; display: flex; align-items: center; justify-content: center; background: #fafafa; border-radius: var(--radius-md);">
+                            <div style="width: 45px; height: 90px; border: 1px solid var(--border); border-radius: 4px; background: #fff; display: flex; flex-direction: column; justify-content: space-around; align-items: center; padding: 4px;">
+                                <div style="width: 32px; height: 18px; background: #f8fafc; border: 1px solid #e2e8f0;"></div>
+                                <div style="width: 32px; height: 18px; background: #f8fafc; border: 1px solid #e2e8f0;"></div>
+                                <div style="width: 32px; height: 18px; background: #f8fafc; border: 1px solid #e2e8f0;"></div>
+                            </div>
+                        </div>
+                        <h3 class="bess-card-title">LUNA2000-21-S1</h3>
+                        <p style="font-size: 0.8rem; color: var(--text-secondary);">Residential modular Smart String home battery system with 100% Depth of Discharge.</p>
+                        <div class="bess-spec-list" style="display: flex; flex-direction: column; gap: 6px; font-size: 0.82rem; margin-top: 8px;">
+                            <div class="bess-spec-item" style="display: flex; justify-content: space-between;"><span>Nominal Energy</span><strong>21.5 kWh</strong></div>
+                            <div class="bess-spec-item" style="display: flex; justify-content: space-between;"><span>Expansion Modular</span><strong>6.9 kWh increments</strong></div>
+                            <div class="bess-spec-item" style="display: flex; justify-content: space-between;"><span>DOD</span><strong>100 %</strong></div>
+                            <div class="bess-spec-item" style="display: flex; justify-content: space-between;"><span>Cooling</span><strong>Natural Cooling</strong></div>
+                        </div>
+                    </div>
+                </div>
+            </div> <!-- /#screen-products -->
+
+            <!-- SCREEN 3: 55 Advanced Engineering features -->
+            <div id="screen-engineering" class="app-screen" style="display: none;">
+                <div class="header-bar">
+                    <div class="header-title">
+                        <h1>Advanced BESS Engineering Calculators</h1>
+                        <p>55 high-fidelity calculation routines containing formulas, physical constants, and variables mapping to standards.</p>
+                    </div>
+                </div>
+
+                <div class="features-container" style="display: grid; grid-template-columns: 280px 1fr; gap: 24px; margin-top: 16px;">
+                    <!-- Left side calculator selector list -->
+                    <div class="features-list-card" style="display: flex; flex-direction: column; gap: 8px; max-height: calc(100vh - 220px); overflow-y: auto; background: #fff; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-md);">
+                        <button class="feature-select-btn active" data-feature="1" onclick="selectFeature(1)">1. PV-BESS Integration <span class="badge">PV</span></button>
+                        <button class="feature-select-btn" data-feature="2" onclick="selectFeature(2)">2. Load Profile Shifting <span class="badge">Load</span></button>
+                        <button class="feature-select-btn" data-feature="3" onclick="selectFeature(3)">3. C-Rate & Duration <span class="badge">Rate</span></button>
+                        <button class="feature-select-btn" data-feature="4" onclick="selectFeature(4)">4. SOH & Lifecycle <span class="badge">SOH</span></button>
+                        <button class="feature-select-btn" data-feature="5" onclick="selectFeature(5)">5. RTE Loss Auditor <span class="badge">Loss</span></button>
+                        <button class="feature-select-btn" data-feature="6" onclick="selectFeature(6)">6. DOD Energy Offset <span class="badge">DOD</span></button>
+                        <button class="feature-select-btn" data-feature="7" onclick="selectFeature(7)">7. Temperature Derating <span class="badge">Temp</span></button>
+                        <button class="feature-select-btn" data-feature="8" onclick="selectFeature(8)">8. Inverter & PCS Count <span class="badge">PCS</span></button>
+                        <button class="feature-select-btn" data-feature="9" onclick="selectFeature(9)">9. Levelized Cost (LCOS) <span class="badge">Cost</span></button>
+                        <button class="feature-select-btn" data-feature="10" onclick="selectFeature(10)">10. Thermal HVAC Load <span class="badge">HVAC</span></button>
+                        <button class="feature-select-btn" data-feature="11" onclick="selectFeature(11)">11. Fault & Short Circuit <span class="badge">Fault</span></button>
+                        <button class="feature-select-btn" data-feature="12" onclick="selectFeature(12)">12. Footprint & Area <span class="badge">Area</span></button>
+                        <button class="feature-select-btn" data-feature="13" onclick="selectFeature(13)">13. Auxiliary Power Draw <span class="badge">Aux</span></button>
+                        <button class="feature-select-btn" data-feature="14" onclick="selectFeature(14)">14. Safety Clearances <span class="badge">Safe</span></button>
+                        <button class="feature-select-btn" data-feature="15" onclick="selectFeature(15)">15. Fire Supp. Deluge <span class="badge">Fire</span></button>
+                        <button class="feature-select-btn" data-feature="16" onclick="selectFeature(16)">16. Fast Frequency (FFR) <span class="badge">FFR</span></button>
+                        <button class="feature-select-btn" data-feature="17" onclick="selectFeature(17)">17. Arbitrage Revenue <span class="badge">ROI</span></button>
+                        <button class="feature-select-btn" data-feature="18" onclick="selectFeature(18)">18. Carbon Offsets <span class="badge">CO2</span></button>
+                        <button class="feature-select-btn" data-feature="19" onclick="selectFeature(19)">19. Power Quality Sizing <span class="badge">PQS</span></button>
+                        <button class="feature-select-btn" data-feature="20" onclick="selectFeature(20)">20. System Weight Loading <span class="badge">Wgt</span></button>
+                        <button class="feature-select-btn" data-feature="21" onclick="selectFeature(21)">21. Altitude Derating <span class="badge">Alt</span></button>
+                        <button class="feature-select-btn" data-feature="22" onclick="selectFeature(22)">22. Jupiter STS Station <span class="badge">STS</span></button>
+                        <button class="feature-select-btn" data-feature="23" onclick="selectFeature(23)">23. DC Active Breaking <span class="badge">Brk</span></button>
+                        <button class="feature-select-btn" data-feature="24" onclick="selectFeature(24)">24. Sub-array Comm Box <span class="badge">COM</span></button>
+                        <button class="feature-select-btn" data-feature="25" onclick="selectFeature(25)">25. Battery SOC Calib. <span class="badge">Bal</span></button>
+                        <button class="feature-select-btn" data-feature="26" onclick="selectFeature(26)">26. C5 Anti-Corrosion <span class="badge">C5</span></button>
+                        <button class="feature-select-btn" data-feature="27" onclick="selectFeature(27)">27. Cooling Optimization <span class="badge">HVAC</span></button>
+                        <button class="feature-select-btn" data-feature="28" onclick="selectFeature(28)">28. Harmonic Distortion <span class="badge">THD</span></button>
+                        <button class="feature-select-btn" data-feature="29" onclick="selectFeature(29)">29. Grid-Forming Support <span class="badge">GFM</span></button>
+                        <button class="feature-select-btn" data-feature="30" onclick="selectFeature(30)">30. Overcurrent Breaker <span class="badge">OC</span></button>
+                        <button class="feature-select-btn" data-feature="31" onclick="selectFeature(31)">31. Wind Foundation Sizer <span class="badge">Wind</span></button>
+                        <button class="feature-select-btn" data-feature="32" onclick="selectFeature(32)">32. DC Cabling Loss <span class="badge">Cab</span></button>
+                        <button class="feature-select-btn" data-feature="33" onclick="selectFeature(33)">33. Circulating Currents <span class="badge">Cir</span></button>
+                        <button class="feature-select-btn" data-feature="34" onclick="selectFeature(34)">34. Transformer Hotspot <span class="badge">STS</span></button>
+                        <button class="feature-select-btn" data-feature="35" onclick="selectFeature(35)">35. NPV & IRR Optimizer <span class="badge">IRR</span></button>
+                        <button class="feature-select-btn" data-feature="36" onclick="selectFeature(36)">36. Transformer Excitation Loss <span class="badge">STS</span></button>
+                        <button class="feature-select-btn" data-feature="37" onclick="selectFeature(37)">37. RTE Thermal Derating <span class="badge">RTE</span></button>
+                        <button class="feature-select-btn" data-feature="38" onclick="selectFeature(38)">38. Soil Thermal Resistivity <span class="badge">Soil</span></button>
+                        <button class="feature-select-btn" data-feature="39" onclick="selectFeature(39)">39. Substation Voltage Rise <span class="badge">V-Up</span></button>
+                        <button class="feature-select-btn" data-feature="40" onclick="selectFeature(40)">40. AC Side Cable Impedance <span class="badge">AC</span></button>
+                        <button class="feature-select-btn" data-feature="41" onclick="selectFeature(41)">41. Transformer Oil Deluge <span class="badge">STS</span></button>
+                        <button class="feature-select-btn" data-feature="42" onclick="selectFeature(42)">42. High GHI Auxiliary Draw <span class="badge">Aux</span></button>
+                        <button class="feature-select-btn" data-feature="43" onclick="selectFeature(43)">43. Degradation Scheduling <span class="badge">SOH</span></button>
+                        <button class="feature-select-btn" data-feature="44" onclick="selectFeature(44)">44. Typhoon Parking Tracker <span class="badge">Wind</span></button>
+                        <button class="feature-select-btn" data-feature="45" onclick="selectFeature(45)">45. LFP Gas Venting Safety Zone <span class="badge">NFPA</span></button>
+                        <button class="feature-select-btn" data-feature="46" onclick="selectFeature(46)">46. Sub-array Over-excitation <span class="badge">Prot</span></button>
+                        <button class="feature-select-btn" data-feature="47" onclick="selectFeature(47)">47. Ground Potential Rise (GPR) <span class="badge">GPR</span></button>
+                        <button class="feature-select-btn" data-feature="48" onclick="selectFeature(48)">48. Substation Busbar Ampacity <span class="badge">Bus</span></button>
+                        <button class="feature-select-btn" data-feature="49" onclick="selectFeature(49)">49. Reactive Power STATCOM <span class="badge">VAR</span></button>
+                        <button class="feature-select-btn" data-feature="50" onclick="selectFeature(50)">50. String Level Imbalance <span class="badge">Imb</span></button>
+                        <button class="feature-select-btn" data-feature="51" onclick="selectFeature(51)">51. Frequency Response Droop <span class="badge">FFR</span></button>
+                        <button class="feature-select-btn" data-feature="52" onclick="selectFeature(52)">52. Inverter Clipping Loss <span class="badge">Clip</span></button>
+                        <button class="feature-select-btn" data-feature="53" onclick="selectFeature(53)">53. Soiling Loss Recovery <span class="badge">Soil</span></button>
+                        <button class="feature-select-btn" data-feature="54" onclick="selectFeature(54)">54. Bifacial Gain Albedo <span class="badge">Bif</span></button>
+                        <button class="feature-select-btn" data-feature="55" onclick="selectFeature(55)">55. BESS Safety Water Flow <span class="badge">Safe</span></button>
+                    </div>
+
+                    <!-- Right side calculation card layout -->
+                    <div class="flex-column gap-24" style="display: flex; flex-direction: column; gap: 24px;">
+                        <div class="card-panel">
+                            <h2 class="panel-title" id="calc-title" style="font-size: 1.25rem;">1. Solar PV-BESS Integration Calculator</h2>
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 24px;">
+                                <div class="flex-column gap-16" id="calc-inputs" style="display: flex; flex-direction: column; gap: 16px;">
+                                    <!-- Inputs injected here dynamically -->
+                                </div>
+                                <div class="flex-column gap-16" style="display: flex; flex-direction: column; gap: 16px;">
+                                    <div class="stats-grid" style="grid-template-columns: 1fr;">
+                                        <div class="stat-card" style="border-left: 4px solid var(--danger); padding: 16px 20px;">
+                                            <span class="stat-label">Calculated Metric</span>
+                                            <span class="stat-value" id="calc-metric-val">--</span>
+                                            <span class="stat-desc" id="calc-metric-lbl">Calculating value...</span>
+                                        </div>
+                                    </div>
+                                    <div id="calc-chart-box" style="display: none; margin-top: 16px;">
+                                        <canvas id="featureChart" style="height: 180px;"></canvas>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Step-by-Step Math Block -->
+                            <div class="calculation-block" style="background: #f8fafc; padding: 20px; border-radius: var(--radius-md); border: 1px solid var(--border); display: flex; flex-direction: column; gap: 16px;">
+                                <h3 style="font-size: 1rem; font-weight: 700; color: var(--text-primary); margin-bottom: 4px;">Step-by-Step Engineering Calculation Details</h3>
+                                <div class="math-formula" id="calc-formula" style="font-family: monospace; font-size: 1.1rem; padding: 16px; background: #fff; border-left: 4px solid var(--warning); border-radius: 4px;">
+                                    <!-- Math LaTeX layout -->
+                                </div>
+                                <div class="calculation-steps" id="calc-steps" style="display: flex; flex-direction: column; gap: 12px; margin-top: 8px;">
+                                    <!-- Steps injected here -->
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div> <!-- /#screen-engineering -->
+
+
         </main>
     </div>
 
