@@ -94,7 +94,7 @@ document.addEventListener('DOMContentLoaded', () => {
         map = L.map('map', {
             center: start.coords,
             zoom: 15,
-            layers: [baseSatellite],
+            layers: [baseVector],
             preferCanvas: true
         });
 
@@ -102,6 +102,8 @@ document.addEventListener('DOMContentLoaded', () => {
         setbackLayer = new L.FeatureGroup().addTo(map);
         solarRowsLayer = new L.FeatureGroup().addTo(map);
         bessLayer = new L.FeatureGroup().addTo(map);
+
+        setTimeout(() => { if (map) map.invalidateSize(); }, 250);
 
         // Custom Map Drawing Click Listener
         map.on('click', function (e) {
@@ -1443,6 +1445,9 @@ window.switchScreen = function(screenId) {
     if (screenId === 'sizer' && simChart) {
         simChart.resize();
         updateSizing();
+    }
+    if (screenId === 'map' && map) {
+        setTimeout(() => { map.invalidateSize(); }, 150);
     }
 };
 
