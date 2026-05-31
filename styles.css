@@ -1438,3 +1438,23 @@ input:checked + .slider:before {
     }
 }
 
+/* Apple & Android Touch UX Optimizations */
+button, 
+.nav-item-btn, 
+.feature-select-btn, 
+.toggle-btn, 
+.btn,
+.sidebar-header i,
+.mobile-toggle-btn {
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+}
+
+input[type="range"] {
+    -webkit-tap-highlight-color: transparent;
+}
+

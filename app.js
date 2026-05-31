@@ -2713,6 +2713,11 @@ window.runFeatCalc = function() {
 };
 
 function triggerMathRendering() {
+    if (!window.katex) {
+        // Retry in 100ms when hosted on networks with latency (e.g. GitHub Pages)
+        setTimeout(triggerMathRendering, 100);
+        return;
+    }
     const formulaDiv = document.getElementById('calc-formula');
     if (formulaDiv) {
         const latex = formulaDiv.getAttribute('data-latex');
